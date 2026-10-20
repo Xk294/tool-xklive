@@ -7,24 +7,37 @@ from auto_sound.dsp.detector import FeedbackDetector
 from auto_sound.sim.room import RoomSimulator
 
 
-def run_detector_on_audio(detector: FeedbackDetector, channel: int, audio: np.ndarray, hop_size: int = 512):
-    """Đưa chuỗi âm thanh liên tục vào detector qua từng hop 512 mẫu (cửa sổ 2048)."""
+def run_detector_on_audio(
+    detector: FeedbackDetector,
+    channel: int,
+    audio: np.ndarray,
+    hop_size: int = 512,
+    feedback_start_sample: int = 0,
+):
+    """Đưa chuỗi âm thanh liên tục vào detector qua từng hop 512 mẫu (cửa sổ 2048).
+    
+    Đo thời gian từ thời điểm tiếng hú bắt đầu (feedback_start_sample) đến thời điểm
+    kết thúc khung phân tích FFT mà tại đó detector phát ra tín hiệu.
+    """
     detector.reset_channel(channel)
     frame_size = detector.frame_size
     detected_proposals = []
-    detection_hop = None
+    detection_end_sample = None
 
-    hop_count = 0
     for start in range(0, len(audio) - frame_size, hop_size):
         frame = audio[start : start + frame_size]
         proposals = detector.process_channel_frame(channel, frame)
         if proposals:
-            if detection_hop is None:
-                detection_hop = hop_count
+            if detection_end_sample is None:
+                detection_end_sample = start + frame_size
             detected_proposals.extend(proposals)
-        hop_count += 1
 
-    detection_time_ms = (detection_hop * hop_size / detector.sample_rate * 1000.0) if detection_hop is not None else None
+    # Tính độ trễ trung thực bao gồm cả độ dài cửa sổ FFT và các hop xác nhận
+    detection_time_ms = (
+        ((detection_end_sample - feedback_start_sample) / detector.sample_rate * 1000.0)
+        if detection_end_sample is not None
+        else None
+    )
     return detected_proposals, detection_time_ms
 
 
@@ -99,11 +112,16 @@ def test_detector_benchmark_recall_and_false_positives() -> None:
             false_positives += 1
             print("  [BÁO NHẦM] Cymbal Crash bị nhận nhầm thành hú!")
 
+    p50_latency = float(np.percentile(detection_times, 50)) if detection_times else 0.0
+    p95_latency = float(np.percentile(detection_times, 95)) if detection_times else 0.0
+    max_latency = float(np.max(detection_times)) if detection_times else 0.0
+
     print("\n================ TỔNG HỢP KẾT QUẢ BENCHMARK ================")
     print(f"  Tổng số mẫu kiểm thử: 40 (20 hú, 20 âm nhạc/nhạc cụ)")
     print(f"  Độ nhạy (Recall): {recall * 100:.1f}% ({true_positives}/{positive_count})")
     print(f"  Số ca báo động giả (False Positives): {false_positives}/20")
-    print(f"  Thời gian phát hiện trung bình: {avg_detection_time:.1f} ms")
+    print(f"  Thời gian phát hiện trung bình (tính cả cửa sổ 2048 mẫu): {avg_detection_time:.1f} ms")
+    print(f"  Thời gian phát hiện p50: {p50_latency:.1f} ms | p95: {p95_latency:.1f} ms | max: {max_latency:.1f} ms")
     print("============================================================")
 
     # Khẳng định ngưỡng chất lượng nghiêm ngặt:
@@ -111,5 +129,6 @@ def test_detector_benchmark_recall_and_false_positives() -> None:
     assert recall >= 0.95, f"Recall quá thấp: {recall * 100:.1f}%"
     # 2. False Positives = 0 (tuyệt đối không báo nhầm trên 20 ca nhạc cụ)
     assert false_positives == 0, f"Có {false_positives} ca báo động giả"
-    # 3. Thời gian phát hiện trung bình < 150 ms
-    assert avg_detection_time < 150.0, f"Thời gian phát hiện quá chậm: {avg_detection_time:.1f}ms"
+    # 3. Thời gian phát hiện (tính cả cửa sổ FFT 42.6ms và 3 frame) p95 <= 100 ms
+    assert p95_latency <= 100.0, f"Độ trễ p95 quá chậm: {p95_latency:.1f}ms > 100ms"
+    assert avg_detection_time <= 100.0, f"Thời gian phát hiện trung bình quá chậm: {avg_detection_time:.1f}ms"
