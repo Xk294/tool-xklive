@@ -1,6 +1,7 @@
 """Driver điều khiển Behringer XR18 / Midas MR18 qua giao thức OSC/UDP."""
 
 from __future__ import annotations
+from dataclasses import dataclass
 import math
 import select
 import socket
@@ -12,6 +13,14 @@ from auto_sound.core.models import ConnectionState, PEQBand
 from auto_sound.mixer.base import MixerDriver
 from auto_sound.mixer.osc import decode_message, encode_message, OscParseError
 from auto_sound.mixer.parameter_mapper import ParameterMapper
+
+
+@dataclass(frozen=True)
+class ExpectedEcho:
+    """Ghi nhớ giá trị tham số hệ thống vừa gửi để nhận diện echo hợp lệ từ mixer."""
+    expected_val: Any
+    is_int: bool
+    expiry: float
 
 
 class XAirClient(MixerDriver):
@@ -42,6 +51,8 @@ class XAirClient(MixerDriver):
         self.on_param_update: Optional[Callable[[str, Any], None]] = None
         self.on_rta_update: Optional[Callable[[List[float]], None]] = None
         self._in_flight_writes: Set[str] = set()
+        self.echo_ttl_s: float = 2.0
+        self._expected_echoes: Dict[str, ExpectedEcho] = {}
 
         self._state = ConnectionState.DISCONNECTED
         self._socket: Optional[socket.socket] = None
@@ -234,20 +245,58 @@ class XAirClient(MixerDriver):
         # Cập nhật cache tham số
         if len(args) > 0:
             val = args[0]
-            is_internal_write = False
             with self._lock:
                 self._params_cache[address] = val
                 evt = self._pending_queries.get(address)
                 if evt:
                     evt.set()
-                is_internal_write = address in self._in_flight_writes
+
+            is_expected = self._is_expected_echo(address, val)
 
             # Nếu thay đổi không do lệnh nội bộ của hệ thống phát sinh -> Kích hoạt callback (soundman chỉnh tay)
-            if not is_internal_write and self.on_param_update:
+            if not is_expected and self.on_param_update:
                 try:
                     self.on_param_update(address, val)
                 except Exception:
                     pass
+
+    def register_expected_echo(
+        self,
+        address: str,
+        val: Any,
+        is_int: bool = False,
+        ttl_s: Optional[float] = None,
+    ) -> None:
+        """Ghi nhận giá trị tham số kỳ vọng sẽ nhận lại từ mixer (echo /xremote) trong thời hạn TTL."""
+        ttl = ttl_s if ttl_s is not None else self.echo_ttl_s
+        with self._lock:
+            self._expected_echoes[address] = ExpectedEcho(
+                expected_val=int(val) if is_int else float(val),
+                is_int=is_int,
+                expiry=time.time() + ttl,
+            )
+
+    def _is_expected_echo(self, address: str, val: Any) -> bool:
+        """Xác thực xem gói tin cập nhật nhận được có phải là echo từ chính lệnh của app hay không."""
+        now = time.time()
+        with self._lock:
+            echo = self._expected_echoes.get(address)
+            if echo is None:
+                return False
+            if now > echo.expiry:
+                self._expected_echoes.pop(address, None)
+                return False
+
+            if echo.is_int:
+                try:
+                    return int(val) == int(echo.expected_val)
+                except (ValueError, TypeError):
+                    return False
+            else:
+                try:
+                    return math.isclose(float(val), float(echo.expected_val), abs_tol=1e-3)
+                except (ValueError, TypeError):
+                    return False
 
     def _query_param_sync(self, address: str, timeout: float = 0.3) -> Optional[Any]:
         """Truy vấn giá trị tham số đồng bộ có timeout."""
@@ -266,11 +315,16 @@ class XAirClient(MixerDriver):
 
     def _write_and_verify(self, address: str, target_val: float, is_int: bool = False) -> bool:
         """Ghi tham số, sau đó đọc lại xác nhận (Verified Write) với cơ chế thử lại tối đa 1 lần."""
+        val_to_send = int(target_val) if is_int else float(target_val)
+        # Đăng ký expected-echo với TTL để nhận diện bản echo broadcast từ /xremote
+        self.register_expected_echo(address, val_to_send, is_int=is_int)
+
         with self._lock:
             self._in_flight_writes.add(address)
         try:
             for attempt in range(2):
-                val_to_send = int(target_val) if is_int else float(target_val)
+                if attempt > 0:
+                    self.register_expected_echo(address, val_to_send, is_int=is_int)
                 self._send_raw(encode_message(address, val_to_send))
 
                 # Đọc lại ngay lập tức để xác minh
