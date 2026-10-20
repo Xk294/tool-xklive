@@ -43,21 +43,23 @@ pip-licenses
 
 ## 3. Chạy Kiểm Thử & Đo Lường (Testing & Benchmark)
 
-Toàn bộ hệ thống được kiểm thử tự động với 33 kịch bản, bao gồm Unit tests, Property-based testing (Hypothesis) và Benchmark âm học phòng:
+Toàn bộ hệ thống được kiểm thử tự động với 39 kịch bản, bao gồm Unit tests, Property-based testing (Hypothesis) và Benchmark âm học phòng:
 
 ```bash
-# Chạy toàn bộ 33 test
+# Chạy toàn bộ 39 test
 .venv/bin/pytest -v
 
 # Chạy riêng bài kiểm thử Benchmark phát hiện hú và từ chối báo động giả
 .venv/bin/pytest -v -s tests/test_detector_sim.py
 ```
 
-### Kết quả Benchmark thực nghiệm:
+### Kết quả Benchmark mô phỏng thực nghiệm (Synthetic Data):
+> **Lưu ý:** Kết quả dưới đây được đo trên tín hiệu tổng hợp sinh bởi `sim/room.py`, chưa phải dữ liệu thu âm ngoài hiện trường thực tế.
+
 - **Tổng số mẫu kiểm thử**: 40 bài test (20 bài hú thực tế ở các tần số 250Hz – 12kHz, 20 bài âm nhạc thực tế gồm vocal ngân có vibrato, vocal thẳng, guitar lead distortion, cymbal trống).
 - **Độ nhạy phát hiện hú (Recall)**: `100.0%` (20/20 trường hợp chớm hú được phát hiện chính xác với sai số tần số `< 0.3%`).
-- **Tỷ lệ báo động giả (False Positives)**: `0/20` (0 ca báo động giả trên tín hiệu nhạc cụ và giọng hát).
-- **Thời gian phát hiện trung bình**: `21.3 ms` (phát hiện và bắt đầu cắt trước khi tiếng hú bùng phát lớn gây nguy hiểm cho loa treble).
+- **Tỷ lệ báo động giả (False Positives)**: `0/20` (0 ca báo động giả trên tín hiệu nhạc cụ và giọng hát mô phỏng).
+- **Thời gian phát hiện trung bình (đo theo hop)**: `21.3 ms` (tính theo số hop phát hiện, chưa tính độ dài cửa sổ phân tích 42.6 ms và độ trễ tích lũy).
 
 ---
 
@@ -118,11 +120,15 @@ Chạy ở chế độ bán tự động (khuyến nghị cho các show đầu t
 
 ---
 
-## 6. Hướng Dẫn Vận Hành Với Behringer XR12 / XR16 / Midas MR12 (Chế Độ RTA Mạng LAN)
+## 6. Hướng Dẫn Vận Hành Với Behringer XR12 / XR16 / Midas MR12 (Chế Độ RTA Mạng LAN — THỬ NGHIỆM)
 
-Do XR12, XR16 và MR12 **không có card USB audio 18x18 đa kênh**, hệ thống áp dụng cơ chế **Chống hú 100% qua Mạng LAN**:
-- **Kết nối phần cứng**: Chỉ cần duy nhất **1 sợi cáp mạng LAN** từ Laptop vào XR12/XR16 (hoặc qua bộ phát Wi-Fi). Hoàn toàn **KHÔNG CẦN CẮM DÂY ÂM THANH**.
-- **Cơ chế**: Mixer gửi trực tiếp luồng phổ **RTA 100-band** (`/meters/4`) về Laptop qua UDP. Thuật toán `RTADetector` quét tìm đỉnh hú trên đường tổng và tự động hạ notch PEQ trên **Main Stereo L/R** (dùng Band 3, 4, 5, 6 — giữ Band 1 & 2 cho Soundman tinh chỉnh âm sắc FOH).
+> **CẢNH BÁO THỬ NGHIỆM:** XR12, XR16 và MR12 **không có card USB audio 18x18 đa kênh**, nên hệ thống sử dụng chế độ RTA qua Mạng LAN mang tính chất **THỬ NGHIỆM**, không cam kết triệt tiêu hú tuyệt đối:
+> - **Giới hạn độ phân giải**: Phổ RTA 100-band trên dải 20Hz – 20kHz có độ phân giải khoảng 1/10 octave mỗi band (kém chi tiết hơn nhiều so với FFT 2048 bin ~23.4Hz).
+> - **Giới hạn can thiệp**: Luồng RTA phản ánh âm thanh tổng (Main L/R), không thể định vị micro cá nhân nào gây hú, do đó chỉ có thể hạ notch bảo vệ trên **Main Stereo L/R**.
+> - **Độ trễ**: Gói tin `/meters/4` cập nhật chu kỳ ~50ms, cần ít nhất 3 frame liên tiếp (>= 150ms) để xác nhận chớm hú. Khuyến nghị chạy ở chế độ bán tự động (`semi`).
+
+- **Kết nối phần cứng**: Cáp mạng LAN RJ45 từ Laptop vào XR12/XR16 (hoặc qua Wi-Fi nội bộ có router riêng).
+- **Cơ chế**: Mixer gửi luồng phổ **RTA 100-band** (`/meters/4`) về Laptop qua UDP. Thuật toán `RTADetector` quét tìm đỉnh hú trên đường tổng và đề xuất/hạ notch PEQ trên **Main Stereo L/R** (dùng Band 3, 4, 5, 6 — giữ Band 1 & 2 cho Soundman tinh chỉnh âm sắc FOH).
 
 ### Lệnh khởi chạy:
 ```bash
@@ -146,7 +152,7 @@ Các thông số dưới đây được xây dựng dựa trên tài liệu giao
 | :--- | :--- | :--- | :--- |
 | **Max Clients OSC** | `max_clients = 4` | XR18/XR12/XR16 giới hạn tối đa 4 client duy trì đăng ký `/xremote` đồng thời. Nếu có nhiều hơn 4 thiết bị (iPad, laptop, điện thoại), client thứ 5 sẽ bị từ chối hoặc đẩy văng. | `[CẦN ĐO THẬT]` trên firmware mới nhất |
 | **Độ trễ phản hồi OSC** | `probe_wait_ms = 80` | Thời gian chờ từ lúc laptop gửi lệnh UDP đổi PEQ đến khi mixer áp dụng vào DSP và phản hồi trạng thái. Dao động trong khoảng 50–100ms. | `[CẦN ĐO THẬT]` với ping mạng thực tế |
-| **Bước lượng tử hóa Freq** | `freq_steps = 201` | Mixer XR18/XR12 biểu diễn tần số qua số thực `[0.0, 1.0]` với khoảng 201 nấc logarit (khoảng 100 nấc mỗi decade). | `[CẦN ĐO THẬT]` độ phân giải bước nhảy |
+| **Bước lượng tử hóa Freq** | `freq_steps = 201` | Mixer XR18/XR12 biểu diễn tần số qua số thực `[0.0, 1.0]` với khoảng 201 nấc logarit (khoảng 67 nấc mỗi decade trên 3 decade 20Hz-20kHz). | `[CẦN ĐO THẬT]` độ phân giải bước nhảy |
 | **Bước lượng tử hóa Gain** | `gain_steps = 121` | Thang gain từ -15dB đến +15dB trên XR18 chia làm khoảng 121 nấc (bước nhảy ~0.25dB - 0.5dB). | `[CẦN ĐO THẬT]` phản hồi từ X-AIR Edit |
 | **Bước lượng tử hóa Q** | `q_steps = 72` | Thang Q từ 0.3 đến 10.0 chia làm 72 nấc logarit theo chuẩn X32/X-Air. | `[CẦN ĐO THẬT]` |
 | **Giới hạn độ dốc PEQ** | `q_max = 10.0` | XR series sử dụng PEQ thông thường, giá trị Q cực đại là `10.0` (độ rộng ~1/7 octave). Bàn KHÔNG hỗ trợ notch filter siêu hẹp Q=60 như thiết bị chuyên dụng dbx AFS2. | Đã xác thực theo kiến trúc DSP XR18 |

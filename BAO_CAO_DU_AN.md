@@ -21,7 +21,7 @@ Dự án **Auto Sound Engineer** được xây dựng nhằm giải quyết bài
    - **Khóa an toàn khi chỉnh tay**: Nếu Soundman tự xoay núm EQ trên iPad hoặc mixer, hệ thống tự động khóa can thiệp trên kênh đó trong 10 giây.
 3. **Phục vụ phân khúc bình dân, tiết kiệm tối đa chi phí phần cứng**:
    - XR18 / MR18: Tận dụng cổng USB 18x18 có sẵn.
-   - XR12 / XR16 / MR12 (không có USB đa kênh): Chống hú **100% qua dây mạng LAN** dựa trên RTA 100-band, **không tốn 1 xu mua thêm soundcard rời**.
+   - XR12 / XR16 / MR12 (không có USB đa kênh): Chế độ RTA mạng LAN (**Thử nghiệm**) giám sát phổ RTA 100-band và can thiệp PEQ Main L/R không cần soundcard rời (lưu ý giới hạn độ phân giải 1/10 octave và chỉ can thiệp đường tổng).
 
 ---
 
@@ -87,7 +87,9 @@ Dự án triển khai **hai động cơ dò hú chuyên biệt**:
 
 ## 3. HIỆN TẠI DỰ ÁN ĐÃ TỚI ĐÂU? (TIẾN ĐỘ THỰC TẾ)
 
-Dự án đã **hoàn thành 100% mục tiêu của Pha 1**, vượt mức kế hoạch ban đầu (đã mở rộng hỗ trợ toàn bộ dòng XR12, XR16, MR12 bên cạnh XR18/MR18).
+Dự án đã **hoàn thành xây dựng kiến trúc cốt lõi và kiểm chứng trong mô phỏng (Pha 1 Prototype)**. Hệ thống đã hỗ trợ cấu trúc profile cho XR18/MR18 (USB audio) và thử nghiệm XR12/XR16/MR12 (LAN RTA).
+
+> **Lưu ý quan trọng:** Hệ thống hiện tại **CHƯA được kiểm chứng trên phần cứng thật** tại hiện trường show diễn (Milestone M5 chưa thực hiện). Toàn bộ kết quả hiện tại phản ánh hoạt động trên máy chủ mô phỏng `FakeXR18` và bộ sinh tín hiệu giả lập phòng `sim/room.py`.
 
 ### Cấu trúc mã nguồn hoàn thiện:
 ```text
@@ -166,9 +168,12 @@ xklive/
 
 ---
 
-## 5. DỰ ÁN ĐÃ THỰC SỰ CHẠY ĐƯỢC CHƯA? (CHỨNG CỨ THỰC TẾ)
+## 5. ĐÁNH GIÁ THỰC TẾ & CHỨNG CỨ KIỂM ĐỊNH
 
-Dự án **ĐÃ THỰC SỰ CHẠY ĐƯỢC 100% VÀ HOẠT ĐỘNG HOÀN TOÀN ỔN ĐỊNH**.
+Hệ thống **ĐÃ KIỂM CHỨNG TRONG MÔ PHỎNG (MOCK / SYNTHETIC)** nhưng **CHƯA ĐƯỢC KIỂM CHỨNG TRÊN PHẦN CỨNG THẬT**.
+
+### 5.1. Bằng chứng đã kiểm chứng trong mô phỏng (Simulation Verified)
+Các kết quả dưới đây chứng minh mã nguồn hoạt động đúng theo các giả định thiết kế đã đặt ra:
 
 ### Chứng cứ 1: Kết quả kiểm thử tự động toàn diện
 Chạy lệnh kiểm thử với toàn bộ 39 kịch bản trên máy:
@@ -228,13 +233,13 @@ Chạy kiểm tra đo lường độ nhạy và chống báo động giả:
 ```bash
 .venv/bin/pytest -v -s tests/test_detector_sim.py
 ```
-**Số liệu đo đạc thực tế:**
+**Số liệu đo đạc thực tế (trên dữ liệu tổng hợp sinh bởi `sim/room.py`):**
 - **Độ nhạy phát hiện hú (Recall):** **$100.0\%$ (20/20 trường hợp)**  
   Tất cả các tần số chớm hú từ trầm (250Hz) đến cao (12,000Hz) đều được phát hiện chính xác với sai số tần số $< 0.3\%$.
-- **Tỷ lệ báo động giả (False Positives):** **$0/20$ (Hoàn toàn không có báo động sai)**  
-  Kiểm thử trên 20 mẫu âm nhạc phức tạp (giọng ca sĩ ngân có rung giọng vibrato, giọng nói thẳng, tiếng guitar solo distortion nhiều hài âm sắc nhọn, tiếng cymbal bộ trống) -> Thuật toán từ chối chính xác 100%.
-- **Thời gian phản ứng phát hiện trung bình:** **$21.3\text{ ms}$**  
-  Phát hiện ngay từ giai đoạn chớm hú ($32\text{ ms}$ đầu tiên), trước khi tiếng hú bùng phát lớn làm chói tai khán giả hoặc gây cháy loa treble.
+- **Tỷ lệ báo động giả (False Positives):** **$0/20$ (Hoàn toàn không có báo động sai trên 20 mẫu mô phỏng)**  
+  *(Lưu ý: Theo thống kê Rule of Three, 0/20 mẫu âm tính chỉ bảo đảm cận trên tỷ lệ lỗi thật $< 14.2\%$ với độ tin cậy $95\%$. Cần mở rộng lên $\ge 250$ mẫu thật ngoài hiện trường để kiểm chứng thương mại).*
+- **Thời gian phản ứng phát hiện (đo theo hop):** **$21.3\text{ ms}$**  
+  Số hop tích lũy 3 frame (2 hop $\times$ 10.67ms). Lưu ý con số này chưa tính kích thước cửa sổ FFT 2048 mẫu (42.67 ms) và độ trễ tích lũy tín hiệu thực tế ($\ge 64.0\text{ ms}$).
 
 ### Chứng cứ 3: Khả năng vận hành ngay trên máy tính mà không cần mixer thật
 Bất kỳ ai cài đặt repo này đều có thể tự mình chạy kiểm chứng giao diện tương tác:
@@ -250,38 +255,43 @@ Bất kỳ ai cài đặt repo này đều có thể tự mình chạy kiểm ch
 
 ---
 
-## 6. SẴN SÀNG ĐƯA LÊN SHOW THẬT & DANH MỤC KIỂM TRA TẠI HIỆN TRƯỜNG
+## 6. HƯỚNG DẪN KẾT NỐI VÀ DANH MỤC CẦN KIỂM CHỨNG TRƯỚC SHOW THẬT
 
-Khi kết nối với mixer vật lý ngoài đời thật (XR18 hoặc XR12/XR16), kỹ sư âm thanh thực hiện theo quy trình sau:
+Hệ thống **CHƯA sẵn sàng chạy tự động (`auto`) trên show thật**. Khi kết nối với mixer vật lý ngoài đời thật (XR18 hoặc XR12/XR16), bắt buộc chạy ở chế độ Bán tự động (`semi`) có soundman giám sát:
 
 ### Trường hợp 1: Dùng cho Behringer XR18 / Midas MR18
 1. **Dây mạng LAN:** Cắm trực tiếp từ cổng Ethernet laptop vào XR18 (Laptop đặt IP tĩnh `192.168.1.50`, Subnet `255.255.255.0`; XR18 đặt IP tĩnh `192.168.1.100`).
 2. **Dây USB:** Cắm cáp USB 2.0 từ XR18 vào laptop. Trên X-Air Edit, mục `In/Out` -> `USB Sends` đặt 16 kênh Direct Out tiền gain.
 3. **Lệnh chạy:**
    ```bash
-   .venv/bin/auto-sound --profile device_profiles/xr18.toml --mode auto
+   .venv/bin/auto-sound --profile device_profiles/xr18.toml --mode semi
    ```
 
-### Trường hợp 2: Dùng cho Behringer XR12 / XR16 / Midas MR12
-1. **Dây mạng LAN:** Cắm 1 sợi dây mạng LAN từ laptop vào XR12 (hoặc kết nối qua bộ phát Wi-Fi). **Không cần cắm bất kỳ dây âm thanh nào.**
+### Trường hợp 2: Dùng cho Behringer XR12 / XR16 / Midas MR12 (Chế độ RTA LAN - THỬ NGHIỆM)
+1. **Dây mạng LAN:** Cắm 1 sợi dây mạng LAN từ laptop vào XR12 (hoặc kết nối qua bộ phát Wi-Fi riêng).
 2. **Lệnh chạy:**
    ```bash
-   .venv/bin/auto-sound --profile device_profiles/xr12.toml --mode auto
+   .venv/bin/auto-sound --profile device_profiles/xr12.toml --mode semi
    ```
-   *(Hệ thống sẽ chạy ở chế độ `RTA MAIN`, tự động giám sát phổ âm thanh tổng và hạ notch trên Main L/R khi có hú).*
+   *(Chạy ở chế độ `semi` thử nghiệm, tự động giám sát phổ RTA 100-band của âm thanh tổng và đề xuất hạ notch trên Main L/R khi có hú).*
 
 ### Các thông số `[CẦN ĐO THẬT]` tại hiện trường:
-Khi cắm trên bàn vật lý, cần ghi nhận thực tế để tinh chỉnh profile tối ưu nhất:
+Khi cắm trên bàn vật lý, cần ghi nhận thực tế bằng công cụ probe ở Giai đoạn B:
 - `max_clients`: Xác nhận xem firmware thực tế có giới hạn cứng 4 client `/xremote` hay không.
-- `probe_wait_ms`: Đo độ trễ ping thực tế từ laptop qua mixer (thường dao động 50–100ms trên cáp có dây).
-- `freq_steps`, `gain_steps`: Kiểm tra độ phân giải nấc hiển thị trên ứng dụng X-Air Edit chính hãng.
+- `probe_wait_ms`: Đo độ trễ ping thực tế từ laptop qua mixer (RTT p50/p95/p99 trên >= 200 lần).
+- `freq_steps`, `gain_steps`, `q_steps`: Kiểm tra độ phân giải nấc hiển thị trên ứng dụng X-Air Edit chính hãng và bảng lượng tử hóa thật.
+- `xremote_echo`: Đo thời gian echo của các lệnh ghi PEQ để cấu hình TTL expected-echo.
 
 ---
 
 ## 7. ĐÁNH GIÁ TỔNG KẾT
 
-Dự án **Auto Sound Engineer (Pha 1)** đã đạt được trạng thái:
-1. **Tính hoàn chỉnh:** Đầy đủ từ tầng Driver mạng OSC, Bộ đệm âm thanh Zero Allocation, Thuật toán DSP kép (FFT USB + RTA LAN), Bộ điều khiển an toàn Safety Controller, đến Giao diện CLI tiếng Việt.
-2. **Tính tin cậy:** 39 bài test tự động bao phủ toàn diện các trường hợp biên (mất mạng, tràn bộ đệm, quá tải lệnh, can thiệp chỉnh tay).
-3. **Tính ứng dụng cao:** Giải quyết trọn vẹn cả 2 nhóm thiết bị phổ biến nhất thị trường: dòng cao cấp có USB (XR18/MR18) và dòng bình dân giá rẻ không có USB (XR12/XR16/MR12).
-4. **Pháp lý tuyệt đối an toàn:** 100% mã nguồn mở tự do thương mại, sẵn sàng đóng gói thành sản phẩm thương mại độc lập.
+Dự án **Auto Sound Engineer (Pha 1 Prototype)** đã đạt được trạng thái:
+1. **Tính hoàn chỉnh về kiến trúc:** Tách biệt Audio Plane và Control Plane, Safety Controller hàm thuần khiết, Verified Write, hàng đợi bất đồng bộ zero-blocking.
+2. **Kiểm thử tự động trong mô phỏng:** 39 bài test tự động bao phủ các trường hợp biên của logic phần mềm trên FakeXR18.
+3. **Mục tiêu Pha 2 để sẵn sàng cho show thật:**
+   - Hoàn thành đo kiểm trên phần cứng thật (Giai đoạn B).
+   - Thu thập và đánh giá trên 100 mẫu hú và 250 mẫu âm thanh thật (Giai đoạn C).
+   - Bổ sung Two-Factor Localizer, Auto-Release khi cạn band (Giai đoạn D).
+   - Xây dựng giao diện Web Companion điều khiển trực quan (Giai đoạn E).
+4. **Pháp lý tuyệt đối an toàn:** 100% mã nguồn mở tự do thương mại (MIT, BSD, Unlicense).

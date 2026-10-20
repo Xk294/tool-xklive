@@ -30,7 +30,7 @@ max_notches_per_channel = 2
 # Thông số ánh xạ tham số EQ
 freq_min_hz = 20.0
 freq_max_hz = 20000.0
-freq_steps = 201  # [CẦN ĐO THẬT] Bước lượng tử hóa tần số trên firmware (khoảng 100 bước/decade)
+freq_steps = 201  # [CẦN ĐO THẬT] Bước lượng tử hóa tần số trên firmware (khoảng 67 bước/decade trên 3 decade 20Hz-20kHz)
 
 gain_min_db = -15.0
 gain_max_db = 15.0
