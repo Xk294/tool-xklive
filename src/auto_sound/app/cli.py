@@ -63,6 +63,7 @@ class AutoSoundApp:
 
         self._cmd_queue: queue.Queue[ActionProposal] = queue.Queue()
         self._network_thread: Optional[threading.Thread] = None
+        self._dsp_thread: Optional[threading.Thread] = None
 
         whitelist = set(self.config.channels.mic_channels)
         allowed_bands = {ch: tuple(self.config.eq.auto_notch_bands) for ch in self.config.channels.mic_channels}
@@ -187,11 +188,28 @@ class AutoSoundApp:
         )
         self._network_thread.start()
 
+        # Khởi động worker DSP chạy nền để xử lý âm thanh độc lập với giao diện
+        self._dsp_thread = threading.Thread(
+            target=self._dsp_worker_loop, daemon=True, name="AudioDspWorker"
+        )
+        self._dsp_thread.start()
+
         self.log_event("system_start", {"mock_mode": self.mock_mode, "mode": self.mode, "mixer": f"{target_ip}:{target_port}"})
+
+    def drain_cmd_queue(self) -> None:
+        """Làm rỗng hàng đợi lệnh, ưu tiên tuyệt đối cho PANIC."""
+        while not self._cmd_queue.empty():
+            try:
+                self._cmd_queue.get_nowait()
+                self._cmd_queue.task_done()
+            except (queue.Empty, ValueError):
+                break
 
     def stop(self) -> None:
         """Dừng sạch sẽ toàn bộ hệ thống."""
         self._running = False
+        if self._dsp_thread and self._dsp_thread.is_alive():
+            self._dsp_thread.join(timeout=1.0)
         if self._network_thread and self._network_thread.is_alive():
             self._network_thread.join(timeout=1.0)
         if self.audio_capture:
@@ -315,12 +333,53 @@ class AutoSoundApp:
             return True
         return self._send_proposal_to_mixer(prop)
 
-    def run_loop(self, max_seconds: Optional[float] = None) -> None:
-        """Vòng lặp chính xử lý âm thanh và tương tác người dùng."""
-        start_time = time.time()
+    def _dsp_worker_loop(self) -> None:
+        """Worker chạy nền xử lý phân tích FFT và tự động nhả notch, hoạt động liên tục cả ở chế độ CLI lẫn Web."""
         read_buffer = np.zeros((512, 18), dtype=np.float32)
         channel_rolling_frames = {ch: np.zeros(2048, dtype=np.float32) for ch in self.config.channels.mic_channels}
+        last_auto_release_check = time.time()
 
+        while self._running:
+            now = time.time()
+
+            # 1. Đọc dữ liệu từ Ring Buffer nếu có ít nhất 512 mẫu
+            if self.audio_capture and self.audio_capture.ring_buffer.available_read() >= 512:
+                n = self.audio_capture.ring_buffer.read(read_buffer)
+                if n == 512 and self.detector:
+                    for ch in self.config.channels.mic_channels:
+                        ch_idx = ch - 1
+                        rolling = channel_rolling_frames[ch]
+                        rolling[: 2048 - 512] = rolling[512:]
+                        rolling[2048 - 512 :] = read_buffer[:, ch_idx]
+
+                        proposals = self.detector.process_channel_frame(ch, rolling)
+                        for prop in proposals:
+                            self.safety_state, decision = decide(self.safety_state, prop, now=now)
+                            if decision.approved and decision.proposal:
+                                approved_p = decision.proposal
+                                if self.mode == "auto":
+                                    self.execute_proposal(approved_p)
+                                else:
+                                    self.pending_proposals.append(approved_p)
+                                    print(
+                                        f"\n{C_RED}[CẢNH BÁO ĐỎ] Kênh {approved_p.channel} chớm hú tại "
+                                        f"{approved_p.freq_hz:.1f}Hz! Bấm [SPACE] để duyệt hạ notch.{C_RESET}"
+                                    )
+            else:
+                time.sleep(0.002)
+
+            # 2. Kiểm tra Auto-Release nhả notch định kỳ mỗi 1.0 giây
+            if self.safety_state.auto_release_enabled and (now - last_auto_release_check >= 1.0):
+                self.safety_state, release_props = check_auto_release(
+                    self.safety_state, now=now, step_db=self.config.safety.auto_release_rate_db_per_s
+                )
+                for r_prop in release_props:
+                    self.execute_proposal(r_prop)
+                last_auto_release_check = now
+
+    def run_loop(self, max_seconds: Optional[float] = None) -> None:
+        """Vòng lặp tương tác người dùng trên giao diện terminal dòng lệnh."""
+        start_time = time.time()
         last_display_time = 0.0
 
         while self._running:
@@ -328,43 +387,7 @@ class AutoSoundApp:
             if max_seconds and (now - start_time >= max_seconds):
                 break
 
-            # 1. Đọc dữ liệu từ Ring Buffer nếu có ít nhất 512 mẫu
-            if self.audio_capture and self.audio_capture.ring_buffer.available_read() >= 512:
-                n = self.audio_capture.ring_buffer.read(read_buffer)
-                if n == 512 and self.detector:
-                    # Cập nhật khung trượt 2048 mẫu cho từng kênh mic
-                    for ch in self.config.channels.mic_channels:
-                        ch_idx = ch - 1
-                        rolling = channel_rolling_frames[ch]
-                        rolling[: 2048 - 512] = rolling[512:]
-                        rolling[2048 - 512 :] = read_buffer[:, ch_idx]
-
-                        # Phân tích FFT tìm hú
-                        proposals = self.detector.process_channel_frame(ch, rolling)
-                        for prop in proposals:
-                            # Chuyển qua Safety Controller kiểm duyệt
-                            self.safety_state, decision = decide(self.safety_state, prop, now=now)
-                            if decision.approved and decision.proposal:
-                                approved_p = decision.proposal
-                                if self.mode == "auto":
-                                    self.execute_proposal(approved_p)
-                                else:
-                                    # Chế độ gợi ý / bán tự động: lưu vào danh sách chờ
-                                    self.pending_proposals.append(approved_p)
-                                    print(
-                                        f"\n{C_RED}[CẢNH BÁO ĐỎ] Kênh {approved_p.channel} chớm hú tại "
-                                        f"{approved_p.freq_hz:.1f}Hz! Bấm [SPACE] để duyệt hạ notch.{C_RESET}"
-                                    )
-
-            # 2. Kiểm tra Auto-Release nhả notch định kỳ (Phương án 3)
-            if self.safety_state.auto_release_enabled and (now - last_display_time >= 1.0):
-                self.safety_state, release_props = check_auto_release(
-                    self.safety_state, now=now, step_db=self.config.safety.auto_release_rate_db_per_s
-                )
-                for r_prop in release_props:
-                    self.execute_proposal(r_prop)
-
-            # 3. Hiển thị trạng thái định kỳ mỗi 1.5 giây
+            # 1. Hiển thị trạng thái định kỳ mỗi 1.5 giây
             if now - last_display_time >= 1.5:
                 dev_name = self.config.device.name
                 target_mode = "RTA MAIN" if not self.config.device.has_multichannel_usb else "USB"
@@ -382,7 +405,7 @@ class AutoSoundApp:
                 sys.stdout.flush()
                 last_display_time = now
 
-            # 3. Lắng nghe phím bấm từ bàn phím (không block)
+            # 2. Lắng nghe phím bấm từ bàn phím (không block)
             if sys.stdin in select.select([sys.stdin], [], [], 0.02)[0]:
                 key = sys.stdin.read(1)
                 if key == " ":
@@ -392,7 +415,8 @@ class AutoSoundApp:
                     else:
                         print(f"\n{C_CYAN}[THÔNG BÁO] Không có cảnh báo hú nào đang chờ duyệt.{C_RESET}")
                 elif key in ("p", "P"):
-                    print(f"\n{C_YELLOW}[PANIC] Đang hoàn tác toàn bộ notch về 0 dB...{C_RESET}")
+                    print(f"\n{C_YELLOW}[PANIC] Đang làm rỗng hàng đợi và hoàn tác toàn bộ notch về 0 dB...{C_RESET}")
+                    self.drain_cmd_queue()
                     self.safety_state, rollback_list = panic_rollback(self.safety_state, now=now)
                     for r_prop in rollback_list:
                         self.execute_proposal(r_prop)
@@ -424,14 +448,21 @@ def main() -> None:
 
     if args.web:
         import uvicorn
+        import webbrowser
         from auto_sound.app.server import create_app
         host = "0.0.0.0" if args.listen_lan else args.host
         web_app = create_app(engine=app, listen_lan=args.listen_lan, mock_mode=args.mock)
-        print(f"\n⚡ Khởi chạy Nuxt 4 Companion UI tại: http://{args.host}:{args.port}")
+        url = f"http://{args.host}:{args.port}"
+        print(f"\n============================================================")
+        print(f"⚡ ĐANG CHẠY NUXT 4 COMPANION UI TẠI: {url}")
+        print(f"👉 Mở trình duyệt web tại: {url}")
+        print(f"============================================================\n")
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
         uvicorn.run(web_app, host=host, port=args.port, log_level="warning")
         return
 
     try:
+        print("💡 Mẹo: Để mở giao diện Web Nuxt 4 trực quan, chạy: auto-sound --web (hoặc: ./run_ui.py)\n")
         app.start()
         app.run_loop()
     except KeyboardInterrupt:

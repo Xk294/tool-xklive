@@ -459,7 +459,8 @@ def create_app(
         new_state, rollback_props = panic_rollback(engine.safety_state, now)
         engine.safety_state = new_state
 
-        # Đẩy ngay toàn bộ lệnh vào hàng đợi ưu tiên cao
+        # Làm rỗng các lệnh cũ tồn đọng để ưu tiên tuyệt đối cho PANIC
+        engine.drain_cmd_queue()
         for prop in rollback_props:
             engine._cmd_queue.put(prop)
 
@@ -640,6 +641,7 @@ def create_app(
                         now = time.time()
                         new_state, rollback_props = panic_rollback(engine.safety_state, now)
                         engine.safety_state = new_state
+                        engine.drain_cmd_queue()
                         for prop in rollback_props:
                             engine._cmd_queue.put(prop)
                         await manager.broadcast_json({

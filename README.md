@@ -64,8 +64,18 @@ Toàn bộ hệ thống được kiểm thử tự động với 47 kịch bản
 
 ---
 
-## 4. Chạy Thử Ở Chế Độ Mô Phỏng (Mock Mode)
+## 4. Khởi Chạy Giao Diện & Mô Phỏng
 
+### 🚀 Cách Mở Giao Diện Web Nhanh Nhất (1-Click Launcher):
+Bạn có thể khởi động ngay giao diện đồ họa Nuxt 4 / Vue 3 với trình duyệt mặc định tự động mở:
+```bash
+# Cách 1: Chạy trực tiếp qua terminal (tự động bật mock mode nếu không cắm mixer)
+./run_ui.py
+
+# Cách 2: Trên macOS, nhấp đúp trực tiếp vào file run_ui.command trong thư mục dự án
+```
+
+### Chạy qua dòng lệnh chuyên sâu:
 Chế độ mô phỏng cho phép thử nghiệm toàn bộ luồng hoạt động (sinh âm thanh ảo, mixer ảo `FakeXR18`, giao diện phím bấm) trực tiếp trên laptop mà **không cần mixer vật lý hay card âm thanh**:
 
 ```bash
