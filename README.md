@@ -43,10 +43,10 @@ pip-licenses
 
 ## 3. Chạy Kiểm Thử & Đo Lường (Testing & Benchmark)
 
-Toàn bộ hệ thống được kiểm thử tự động với 39 kịch bản, bao gồm Unit tests, Property-based testing (Hypothesis) và Benchmark âm học phòng:
+Toàn bộ hệ thống được kiểm thử tự động với 47 kịch bản (46 passed, 1 skipped chờ tập dữ liệu thật Giai đoạn C), bao gồm Unit tests, Property-based testing (Hypothesis), kiểm tra Expected-Echo và Benchmark âm học:
 
 ```bash
-# Chạy toàn bộ 39 test
+# Chạy toàn bộ test suite
 .venv/bin/pytest -v
 
 # Chạy riêng bài kiểm thử Benchmark phát hiện hú và từ chối báo động giả
@@ -57,9 +57,10 @@ Toàn bộ hệ thống được kiểm thử tự động với 39 kịch bản
 > **Lưu ý:** Kết quả dưới đây được đo trên tín hiệu tổng hợp sinh bởi `sim/room.py`, chưa phải dữ liệu thu âm ngoài hiện trường thực tế.
 
 - **Tổng số mẫu kiểm thử**: 40 bài test (20 bài hú thực tế ở các tần số 250Hz – 12kHz, 20 bài âm nhạc thực tế gồm vocal ngân có vibrato, vocal thẳng, guitar lead distortion, cymbal trống).
-- **Độ nhạy phát hiện hú (Recall)**: `100.0%` (20/20 trường hợp chớm hú được phát hiện chính xác với sai số tần số `< 0.3%`).
-- **Tỷ lệ báo động giả (False Positives)**: `0/20` (0 ca báo động giả trên tín hiệu nhạc cụ và giọng hát mô phỏng).
-- **Thời gian phát hiện trung bình (đo theo hop)**: `21.3 ms` (tính theo số hop phát hiện, chưa tính độ dài cửa sổ phân tích 42.6 ms và độ trễ tích lũy).
+- **Độ nhạy phát hiện hú (Recall)**: `100.0%` (20/20 trường hợp) | Khoảng tin cậy Wilson 95%: `[83.9% - 100.0%]`.
+- **Tỷ lệ báo động giả (False Positives)**: `0/20` (0 ca báo động giả trên tín hiệu mô phỏng) | Khoảng tin cậy Wilson 95%: `[0.0% - 16.1%]`.
+- **Thời gian phát hiện trung thực**: `64.0 ms` (bao gồm cửa sổ Hann 2048 mẫu 42.6 ms và 3 frame tích lũy xác nhận, p50: 64.0 ms, p95: 64.0 ms, max: 64.0 ms).
+- **Tập dữ liệu thực tế (Real Data)**: Tách riêng trong harness, chờ thu thập tối thiểu 100 mẫu hú và 250 mẫu âm nhạc thật ở Giai đoạn C.
 
 ---
 

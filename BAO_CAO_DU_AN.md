@@ -176,7 +176,7 @@ Hệ thống **ĐÃ KIỂM CHỨNG TRONG MÔ PHỎNG (MOCK / SYNTHETIC)** nhưng
 Các kết quả dưới đây chứng minh mã nguồn hoạt động đúng theo các giả định thiết kế đã đặt ra:
 
 ### Chứng cứ 1: Kết quả kiểm thử tự động toàn diện
-Chạy lệnh kiểm thử với toàn bộ 39 kịch bản trên máy:
+Chạy lệnh kiểm thử với toàn bộ 47 kịch bản (46 passed, 1 skipped) trên máy:
 ```bash
 .venv/bin/pytest -v
 ```
@@ -234,12 +234,11 @@ Chạy kiểm tra đo lường độ nhạy và chống báo động giả:
 .venv/bin/pytest -v -s tests/test_detector_sim.py
 ```
 **Số liệu đo đạc thực tế (trên dữ liệu tổng hợp sinh bởi `sim/room.py`):**
-- **Độ nhạy phát hiện hú (Recall):** **$100.0\%$ (20/20 trường hợp)**  
+- **Độ nhạy phát hiện hú (Recall):** **$100.0\%$ (20/20 trường hợp)** | Khoảng tin cậy Wilson 95%: `[83.9% - 100.0%]`.  
   Tất cả các tần số chớm hú từ trầm (250Hz) đến cao (12,000Hz) đều được phát hiện chính xác với sai số tần số $< 0.3\%$.
-- **Tỷ lệ báo động giả (False Positives):** **$0/20$ (Hoàn toàn không có báo động sai trên 20 mẫu mô phỏng)**  
-  *(Lưu ý: Theo thống kê Rule of Three, 0/20 mẫu âm tính chỉ bảo đảm cận trên tỷ lệ lỗi thật $< 14.2\%$ với độ tin cậy $95\%$. Cần mở rộng lên $\ge 250$ mẫu thật ngoài hiện trường để kiểm chứng thương mại).*
-- **Thời gian phản ứng phát hiện (đo theo hop):** **$21.3\text{ ms}$**  
-  Số hop tích lũy 3 frame (2 hop $\times$ 10.67ms). Lưu ý con số này chưa tính kích thước cửa sổ FFT 2048 mẫu (42.67 ms) và độ trễ tích lũy tín hiệu thực tế ($\ge 64.0\text{ ms}$).
+- **Tỷ lệ báo động giả (False Positives):** **$0/20$ (Hoàn toàn không có báo động sai trên 20 mẫu mô phỏng)** | Khoảng tin cậy Wilson 95%: `[0.0% - 16.1%]`.  
+  *(Lưu ý thống kê: 0/20 mẫu âm tính chỉ bảo đảm cận trên tỷ lệ lỗi thật $< 16.1\%$ với độ tin cậy $95\%$. Cần mở rộng lên $\ge 250$ mẫu thật ngoài hiện trường ở Giai đoạn C để kiểm chứng thương mại).*
+- **Thời gian phản ứng phát hiện thực tế:** **$64.0\text{ ms}$** (bao gồm cả cửa sổ FFT 2048 mẫu 42.67ms và 3 frame tích lũy xác nhận, p50: 64.0ms, p95: 64.0ms, max: 64.0ms). Con số 21.3ms trước đây là đếm số hop đơn thuần, đã được chuẩn hóa lại trung thực.
 
 ### Chứng cứ 3: Khả năng vận hành ngay trên máy tính mà không cần mixer thật
 Bất kỳ ai cài đặt repo này đều có thể tự mình chạy kiểm chứng giao diện tương tác:

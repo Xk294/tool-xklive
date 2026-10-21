@@ -1,10 +1,28 @@
-"""Kiểm thử benchmark thuật toán FeedbackDetector trên dữ liệu mô phỏng thực tế."""
+"""Kiểm thử benchmark thuật toán FeedbackDetector trên dữ liệu mô phỏng và dữ liệu thật."""
 
+import math
+import os
 import time
+from pathlib import Path
+from typing import Tuple
 import numpy as np
 import pytest
 from auto_sound.dsp.detector import FeedbackDetector
 from auto_sound.sim.room import RoomSimulator
+
+
+def wilson_score_interval(k: int, n: int, confidence: float = 0.95) -> Tuple[float, float, float]:
+    """Tính khoảng tin cậy Wilson 95% (Wilson Score Interval) cho tỷ lệ k / n."""
+    if n == 0:
+        return 0.0, 0.0, 0.0
+    z = 1.95996  # Phân vị Gaussian cho độ tin cậy 95%
+    p = k / n
+    denominator = 1.0 + z**2 / n
+    centre = (p + z**2 / (2 * n)) / denominator
+    spread = (z * math.sqrt(p * (1.0 - p) / n + z**2 / (4 * n**2))) / denominator
+    lower = max(0.0, centre - spread)
+    upper = min(1.0, centre + spread)
+    return p, lower, upper
 
 
 def run_detector_on_audio(
@@ -116,19 +134,40 @@ def test_detector_benchmark_recall_and_false_positives() -> None:
     p95_latency = float(np.percentile(detection_times, 95)) if detection_times else 0.0
     max_latency = float(np.max(detection_times)) if detection_times else 0.0
 
-    print("\n================ TỔNG HỢP KẾT QUẢ BENCHMARK ================")
+    _, rec_low, rec_high = wilson_score_interval(true_positives, positive_count)
+    _, fp_low, fp_high = wilson_score_interval(false_positives, 20)
+
+    print("\n================ TỔNG HỢP KẾT QUẢ BENCHMARK MÔ PHỎNG (SYNTHETIC) ================")
     print(f"  Tổng số mẫu kiểm thử: 40 (20 hú, 20 âm nhạc/nhạc cụ)")
-    print(f"  Độ nhạy (Recall): {recall * 100:.1f}% ({true_positives}/{positive_count})")
-    print(f"  Số ca báo động giả (False Positives): {false_positives}/20")
+    print(f"  Độ nhạy (Recall): {recall * 100:.1f}% ({true_positives}/{positive_count}) | Khoảng tin cậy Wilson 95%: [{rec_low*100:.1f}% - {rec_high*100:.1f}%]")
+    print(f"  Số ca báo động giả (False Positives): {false_positives}/20 ({false_positives/20*100:.1f}%) | Khoảng tin cậy Wilson 95%: [{fp_low*100:.1f}% - {fp_high*100:.1f}%]")
+    print(f"  --> Lưu ý thống kê: 0/20 FP trên mẫu mô phỏng tương ứng tỷ lệ lỗi thật ngoài đời có thể lên tới {fp_high*100:.1f}%!")
     print(f"  Thời gian phát hiện trung bình (tính cả cửa sổ 2048 mẫu): {avg_detection_time:.1f} ms")
     print(f"  Thời gian phát hiện p50: {p50_latency:.1f} ms | p95: {p95_latency:.1f} ms | max: {max_latency:.1f} ms")
-    print("============================================================")
+    print("=================================================================================")
 
     # Khẳng định ngưỡng chất lượng nghiêm ngặt:
     # 1. Recall >= 95% (ít nhất 19/20 ca hú được phát hiện)
     assert recall >= 0.95, f"Recall quá thấp: {recall * 100:.1f}%"
-    # 2. False Positives = 0 (tuyệt đối không báo nhầm trên 20 ca nhạc cụ)
+    # 2. False Positives = 0 (tuyệt đối không báo nhầm trên 20 ca nhạc cụ mô phỏng)
     assert false_positives == 0, f"Có {false_positives} ca báo động giả"
     # 3. Thời gian phát hiện (tính cả cửa sổ FFT 42.6ms và 3 frame) p95 <= 100 ms
     assert p95_latency <= 100.0, f"Độ trễ p95 quá chậm: {p95_latency:.1f}ms > 100ms"
     assert avg_detection_time <= 100.0, f"Thời gian phát hiện trung bình quá chậm: {avg_detection_time:.1f}ms"
+
+
+def test_detector_benchmark_real_data() -> None:
+    """Benchmark trên tập dữ liệu thu âm hiện trường thật (Giai đoạn C).
+    
+    Tập dữ liệu yêu cầu tối thiểu 100 mẫu hú và 250 mẫu âm nhạc/tiếng ồn thật.
+    Tự động bỏ qua (SKIP) nếu thư mục data/real_recordings chưa có dữ liệu.
+    """
+    real_data_dir = Path(__file__).resolve().parent.parent / "data" / "real_recordings"
+    if not real_data_dir.exists() or not list(real_data_dir.glob("*.wav")):
+        pytest.skip(
+            "CHƯA CÓ DỮ LIỆU THẬT: Thư mục 'data/real_recordings/' chưa có file ghi âm (.wav). "
+            "Cần thu thập tối thiểu 100 mẫu hú thật và 250 mẫu âm nhạc ở Giai đoạn C."
+        )
+
+    # Khi có dữ liệu thật (Giai đoạn C sẽ đọc và benchmark tại đây)
+    pass
