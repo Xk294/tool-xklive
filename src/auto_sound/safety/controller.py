@@ -42,6 +42,11 @@ class SafetyState:
     probe_wait_ms: float = 80.0
     max_transactions_per_sec: float = 2.0
     lock_duration_s: float = 10.0
+    # Cấu hình xử lý khi cạn band và tự động nhả notch (Phương án 1 & 3)
+    reclaim_on_exhaustion: bool = False
+    auto_release_wait_s: float = 20.0
+    auto_release_rate_db_per_s: float = 1.0
+    auto_release_enabled: bool = True
 
 
 def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[SafetyState, Decision]:
@@ -85,6 +90,10 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
             probe_wait_ms=state.probe_wait_ms,
             max_transactions_per_sec=state.max_transactions_per_sec,
             lock_duration_s=state.lock_duration_s,
+            reclaim_on_exhaustion=state.reclaim_on_exhaustion,
+            auto_release_wait_s=state.auto_release_wait_s,
+            auto_release_rate_db_per_s=state.auto_release_rate_db_per_s,
+            auto_release_enabled=state.auto_release_enabled,
         )
         return new_state, Decision(
             approved=False,
@@ -121,7 +130,27 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
                 allocated_band = b
                 break
 
-    # Nếu tất cả các band hệ thống đều đã dùng hết
+    # Xử lý khi cạn band tự động (Phương án 1):
+    is_reclaimed = False
+    reclaim_info = ""
+    if allocated_band is None and state.reclaim_on_exhaustion:
+        candidate_notches = [
+            (b, state.active_notches[(ch, b)])
+            for b in available_bands
+            if (ch, b) in state.active_notches
+        ]
+        if candidate_notches:
+            # Ưu tiên: 1) độ sâu cắt nông nhất (abs nhỏ nhất), 2) cũ nhất (last_updated_time nhỏ nhất)
+            candidate_notches.sort(key=lambda item: (abs(item[1].current_gain_db), item[1].last_updated_time))
+            reclaimed_band, reclaimed_notch = candidate_notches[0]
+            allocated_band = reclaimed_band
+            is_reclaimed = True
+            reclaim_info = (
+                f"[CẠN BAND] Tái sử dụng Band {allocated_band} (thay thế notch {reclaimed_notch.freq_hz:.1f}Hz, "
+                f"{reclaimed_notch.current_gain_db:+.1f}dB) trên Kênh {ch}"
+            )
+
+    # Nếu không thể phân bổ hoặc tái sử dụng band nào
     if allocated_band is None:
         return state, Decision(
             approved=False,
@@ -134,7 +163,7 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
     step_count = 1
     target_gain = state.probe_step_db  # Mặc định -3.0 dB
 
-    if existing_notch_key is not None:
+    if existing_notch_key is not None and not is_reclaimed:
         prev_notch = state.active_notches[existing_notch_key]
         step_count = prev_notch.probe_step_count + 1
         # Cắt thêm 1 bước nữa (ví dụ: -3dB -> -6dB), không vượt quá max_cut_db (-12dB)
@@ -171,6 +200,16 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
         probe_wait_ms=state.probe_wait_ms,
         max_transactions_per_sec=state.max_transactions_per_sec,
         lock_duration_s=state.lock_duration_s,
+        reclaim_on_exhaustion=state.reclaim_on_exhaustion,
+        auto_release_wait_s=state.auto_release_wait_s,
+        auto_release_rate_db_per_s=state.auto_release_rate_db_per_s,
+        auto_release_enabled=state.auto_release_enabled,
+    )
+
+    reason_str = (
+        reclaim_info
+        if is_reclaimed
+        else f"Cắt thăm dò bước {step_count} ({target_gain:+.1f}dB tại {proposal.freq_hz:.1f}Hz)"
     )
 
     approved_proposal = ActionProposal(
@@ -181,7 +220,7 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
         q=clamped_q,
         bus=proposal.bus,
         target=proposal.target,
-        reason=f"Cắt thăm dò bước {step_count} ({target_gain:+.1f}dB tại {proposal.freq_hz:.1f}Hz)",
+        reason=reason_str,
     )
 
     return new_state, Decision(
@@ -189,7 +228,7 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
         proposal=approved_proposal,
         effective_gain_db=target_gain,
         is_probing=True,
-        reason="Chấp thuận can thiệp hạ notch an toàn",
+        reason=reclaim_info if is_reclaimed else "Chấp thuận can thiệp hạ notch an toàn",
     )
 
 
@@ -210,6 +249,10 @@ def handle_manual_override(state: SafetyState, channel: int, now: float) -> Safe
         probe_wait_ms=state.probe_wait_ms,
         max_transactions_per_sec=state.max_transactions_per_sec,
         lock_duration_s=state.lock_duration_s,
+        reclaim_on_exhaustion=state.reclaim_on_exhaustion,
+        auto_release_wait_s=state.auto_release_wait_s,
+        auto_release_rate_db_per_s=state.auto_release_rate_db_per_s,
+        auto_release_enabled=state.auto_release_enabled,
     )
 
 
@@ -243,6 +286,97 @@ def panic_rollback(state: SafetyState, now: float) -> Tuple[SafetyState, List[Ac
         probe_wait_ms=state.probe_wait_ms,
         max_transactions_per_sec=state.max_transactions_per_sec,
         lock_duration_s=state.lock_duration_s,
+        reclaim_on_exhaustion=state.reclaim_on_exhaustion,
+        auto_release_wait_s=state.auto_release_wait_s,
+        auto_release_rate_db_per_s=state.auto_release_rate_db_per_s,
+        auto_release_enabled=state.auto_release_enabled,
     )
 
     return new_state, rollback_proposals
+
+
+def check_auto_release(
+    state: SafetyState, now: float, step_db: float = 1.0
+) -> Tuple[SafetyState, List[ActionProposal]]:
+    """Kiểm tra và tự động nhả dần các notch về 0 dB sau khi ổn định (Phương án 3).
+    
+    Quy tắc an toàn bất biến:
+    - Chỉ nhả các band do hệ thống quản lý (allowed_bands, ví dụ Band 3-4), tuyệt đối không can thiệp Band 1-2.
+    - Không bao giờ nhả vượt quá 0.0 dB (không bao giờ boost).
+    - Khi notch nhả chạm 0.0 dB, band được giải phóng hoàn toàn để tái sử dụng.
+    """
+    if not state.auto_release_enabled or not state.active_notches:
+        return state, []
+
+    proposals: List[ActionProposal] = []
+    new_notches = dict(state.active_notches)
+
+    for (ch, band), notch in list(state.active_notches.items()):
+        # Tuyệt đối không can thiệp band ngoài allowed_bands của kênh
+        if band not in state.allowed_bands.get(ch, ()):
+            continue
+
+        idle_time = now - notch.last_updated_time
+        if idle_time >= state.auto_release_wait_s:
+            new_gain = round(notch.current_gain_db + step_db, 1)
+
+            if new_gain >= 0.0:
+                # Nhả hoàn toàn về 0 dB: giải phóng band khỏi danh sách notch hoạt động
+                new_notches.pop((ch, band), None)
+                proposals.append(
+                    ActionProposal(
+                        channel=ch,
+                        band=band,
+                        freq_hz=notch.freq_hz,
+                        gain_db=0.0,
+                        q=notch.q,
+                        target="main" if ch == 0 else "ch",
+                        reason=f"Auto-release: Nhả hoàn toàn Band {band} về 0.0dB sau {idle_time:.1f}s ổn định",
+                    )
+                )
+            else:
+                # Nhả một bước (ví dụ: -6.0dB -> -5.0dB)
+                updated_notch = ActiveNotch(
+                    channel=ch,
+                    band=band,
+                    freq_hz=notch.freq_hz,
+                    current_gain_db=new_gain,
+                    target_gain_db=new_gain,
+                    q=notch.q,
+                    is_probing=False,
+                    last_updated_time=now,
+                    probe_step_count=notch.probe_step_count,
+                )
+                new_notches[(ch, band)] = updated_notch
+                proposals.append(
+                    ActionProposal(
+                        channel=ch,
+                        band=band,
+                        freq_hz=notch.freq_hz,
+                        gain_db=new_gain,
+                        q=notch.q,
+                        target="main" if ch == 0 else "ch",
+                        reason=f"Auto-release: Nhả bước Band {band} lên {new_gain:+.1f}dB sau {idle_time:.1f}s ổn định",
+                    )
+                )
+
+    new_tx = state.transaction_history + ((now,) if proposals else ())
+
+    new_state = SafetyState(
+        active_notches=new_notches,
+        channel_locks=state.channel_locks,
+        transaction_history=new_tx,
+        whitelist=state.whitelist,
+        allowed_bands=state.allowed_bands,
+        max_boost_db=state.max_boost_db,
+        max_cut_db=state.max_cut_db,
+        probe_step_db=state.probe_step_db,
+        probe_wait_ms=state.probe_wait_ms,
+        max_transactions_per_sec=state.max_transactions_per_sec,
+        lock_duration_s=state.lock_duration_s,
+        reclaim_on_exhaustion=state.reclaim_on_exhaustion,
+        auto_release_wait_s=state.auto_release_wait_s,
+        auto_release_rate_db_per_s=state.auto_release_rate_db_per_s,
+        auto_release_enabled=state.auto_release_enabled,
+    )
+    return new_state, proposals

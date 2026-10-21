@@ -24,6 +24,7 @@ from auto_sound.mixer.parameter_mapper import ParameterMapper
 from auto_sound.mixer.xair import XAirClient
 from auto_sound.safety.controller import (
     SafetyState,
+    check_auto_release,
     decide,
     handle_manual_override,
     panic_rollback,
@@ -79,6 +80,10 @@ class AutoSoundApp:
             probe_wait_ms=self.config.safety.probe_wait_ms,
             max_transactions_per_sec=self.config.safety.max_transactions_per_sec,
             lock_duration_s=self.config.safety.manual_override_lock_s,
+            reclaim_on_exhaustion=True,
+            auto_release_wait_s=self.config.safety.auto_release_wait_s,
+            auto_release_rate_db_per_s=self.config.safety.auto_release_rate_db_per_s,
+            auto_release_enabled=True,
         )
 
         self.pending_proposals: List[ActionProposal] = []
@@ -269,10 +274,27 @@ class AutoSoundApp:
         )
 
         if success:
-            print(
-                f"\n{C_GREEN}[ĐÃ HẠ NOTCH] {target_name} | Band {prop.band} | "
-                f"{prop.freq_hz:.1f}Hz | {prop.gain_db:+.1f}dB | Q={prop.q:.1f}{C_RESET}"
-            )
+            if "[CẠN BAND]" in prop.reason:
+                print(f"\n{C_YELLOW}{prop.reason}{C_RESET}")
+                self.log_event("band_exhaustion_reclaim", {
+                    "channel": prop.channel,
+                    "band": prop.band,
+                    "freq_hz": prop.freq_hz,
+                    "reason": prop.reason,
+                })
+            elif "Auto-release" in prop.reason:
+                print(f"\n{C_CYAN}[AUTO-RELEASE] {target_name} | Band {prop.band} -> {prop.gain_db:+.1f}dB{C_RESET}")
+                self.log_event("auto_release", {
+                    "channel": prop.channel,
+                    "band": prop.band,
+                    "gain_db": prop.gain_db,
+                    "reason": prop.reason,
+                })
+            else:
+                print(
+                    f"\n{C_GREEN}[ĐÃ HẠ NOTCH] {target_name} | Band {prop.band} | "
+                    f"{prop.freq_hz:.1f}Hz | {prop.gain_db:+.1f}dB | Q={prop.q:.1f}{C_RESET}"
+                )
             self.log_event("notch_applied", {
                 "target": prop.target,
                 "channel": prop.channel,
@@ -334,7 +356,15 @@ class AutoSoundApp:
                                         f"{approved_p.freq_hz:.1f}Hz! Bấm [SPACE] để duyệt hạ notch.{C_RESET}"
                                     )
 
-            # 2. Hiển thị trạng thái định kỳ mỗi 1.5 giây
+            # 2. Kiểm tra Auto-Release nhả notch định kỳ (Phương án 3)
+            if self.safety_state.auto_release_enabled and (now - last_display_time >= 1.0):
+                self.safety_state, release_props = check_auto_release(
+                    self.safety_state, now=now, step_db=self.config.safety.auto_release_rate_db_per_s
+                )
+                for r_prop in release_props:
+                    self.execute_proposal(r_prop)
+
+            # 3. Hiển thị trạng thái định kỳ mỗi 1.5 giây
             if now - last_display_time >= 1.5:
                 dev_name = self.config.device.name
                 target_mode = "RTA MAIN" if not self.config.device.has_multichannel_usb else "USB"
