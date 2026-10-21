@@ -407,6 +407,10 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Chạy ở chế độ mô phỏng (không cần mixer và soundcard thật)")
     parser.add_argument("--mode", choices=["auto", "semi", "manual"], default="auto", help="Chế độ vận hành (mặc định: auto)")
     parser.add_argument("--profile", default="device_profiles/xr18.toml", help="Đường dẫn file cấu hình profile thiết bị")
+    parser.add_argument("--web", action="store_true", help="Khởi động Companion Web UI (Nuxt 4 / Vue 3) qua FastAPI")
+    parser.add_argument("--host", default="127.0.0.1", help="Địa chỉ host bind Web server (mặc định 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000, help="Cổng chạy Web server (mặc định 8000)")
+    parser.add_argument("--listen-lan", action="store_true", help="Cho phép các thiết bị iPad/điện thoại trong mạng LAN truy cập (kèm mã PIN ghép nối)")
     args = parser.parse_args()
 
     cfg_path = Path(args.profile)
@@ -417,6 +421,16 @@ def main() -> None:
     mapper = ParameterMapper.from_profile(cfg_path)
 
     app = AutoSoundApp(config=config, mapper=mapper, mock_mode=args.mock, mode=args.mode)
+
+    if args.web:
+        import uvicorn
+        from auto_sound.app.server import create_app
+        host = "0.0.0.0" if args.listen_lan else args.host
+        web_app = create_app(engine=app, listen_lan=args.listen_lan, mock_mode=args.mock)
+        print(f"\n⚡ Khởi chạy Nuxt 4 Companion UI tại: http://{args.host}:{args.port}")
+        uvicorn.run(web_app, host=host, port=args.port, log_level="warning")
+        return
+
     try:
         app.start()
         app.run_loop()

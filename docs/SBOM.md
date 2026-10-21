@@ -23,6 +23,11 @@
 | **scipy** | 1.17.1 | BSD License (BSD-3-Clause) | Runtime | Bộ lọc median filter, biquad filter, PocketFFT | ⚠️ Cần xác minh thành phần wheel (Xem mục 3) |
 | **python-osc** | 1.10.2 | Freely Distributable (The Unlicense) | Runtime | Giao thức mã hóa/giải mã OSC qua UDP | ✅ Sạch (Public Domain) |
 | **sounddevice** | 0.5.6 | MIT | Runtime | Giao tiếp PortAudio thu nhận âm thanh USB | ✅ Sạch (MIT) |
+| **fastapi** | 0.156.4 | MIT | Runtime | Framework REST API & WebSocket | ✅ Sạch (MIT) |
+| **uvicorn** | 0.54.0 | BSD-3-Clause | Runtime | ASGI Web Server hiệu năng cao | ✅ Sạch (BSD-3-Clause) |
+| **websockets** | 17.3 | BSD-3-Clause | Runtime | Giao thức truyền tin WebSocket hai chiều | ✅ Sạch (BSD-3-Clause) |
+| **pydantic** | 2.14.1 | MIT | Runtime | Xác thực cấu trúc dữ liệu JSON | ✅ Sạch (MIT) |
+| **Nuxt 4 / Vue 3**| 4.4.8 / 3.5.44 | MIT | Frontend | Framework giao diện người dùng Companion | ✅ Sạch (MIT - Bundle tĩnh, Zero CDN) |
 | **cffi** | 2.1.1 | MIT-0 | Runtime (Chuyển tiếp) | C Foreign Function Interface cho sounddevice | ✅ Sạch (MIT-0) |
 | **pycparser** | 3.11 | BSD-3-Clause | Runtime (Chuyển tiếp) | Bộ phân tích cú pháp C cho cffi | ✅ Sạch (BSD-3-Clause) |
 | **Pygments** | 2.21.0 | BSD-2-Clause | Dev / Tool | Định dạng cú pháp code khi xuất tài liệu | ✅ Sạch (BSD-2-Clause) |

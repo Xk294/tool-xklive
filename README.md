@@ -78,9 +78,22 @@ Hoặc chạy ở chế độ bán tự động (cảnh báo đỏ khi có hú, 
 .venv/bin/auto-sound --mock --mode semi
 ```
 
-### Các phím thao tác trong CLI:
+Hoặc khởi chạy kèm **Web Companion UI (Nuxt 4 / Vue 3)** trên trình duyệt:
+
+```bash
+.venv/bin/auto-sound --mock --web
+# Mở trình duyệt tại: http://127.0.0.1:8000
+```
+
+Nếu muốn kết nối từ iPad / điện thoại cùng mạng LAN:
+```bash
+.venv/bin/auto-sound --web --listen-lan
+# Nhập mã PIN 4 chữ số hiển thị trên terminal để xác thực thiết bị
+```
+
+### Các phím thao tác trong CLI / Web Companion:
 - `[SPACE]` (Dấu cách): Phê duyệt lệnh hạ notch đang chờ (trong chế độ `semi`).
-- `[P]`: **PANIC BUTTON** — Lập tức hoàn tác, trả toàn bộ notch tự động về 0 dB.
+- `[P]` hoặc `[ESC]`: **GIANT PANIC BUTTON** — Lập tức hoàn tác, trả toàn bộ notch tự động về 0 dB.
 - `[Q]`: Thoát chương trình sạch sẽ, tự động ngắt kết nối an toàn.
 
 ---

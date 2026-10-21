@@ -13,14 +13,18 @@ authors = [
     { name = "XK Live Sound Team" }
 ]
 # Ghi chú bản quyền phụ thuộc:
-# - numpy, scipy: BSD-3-Clause
+# - numpy, scipy, uvicorn: BSD-3-Clause
 # - python-osc: The Unlicense (Public Domain)
-# - sounddevice: MIT
+# - sounddevice, fastapi, pydantic, websockets: MIT
 dependencies = [
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "python-osc>=1.8.3",
     "sounddevice>=0.4.6",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "websockets>=11.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +32,7 @@ dev = [
     "pytest>=7.4.0",
     "hypothesis>=6.82.0",
     "pip-licenses>=4.3.0",
+    "httpx>=0.24.0",
 ]
 
 [project.scripts]
