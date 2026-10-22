@@ -62,7 +62,7 @@ pip-licenses
 
 ## 3. Chạy Kiểm Thử Tự Động (Testing Suite)
 
-Toàn bộ hệ thống được kiểm thử tự động với **70 kịch bản** (69 passed, 1 skipped chờ tập dữ liệu show diễn thực tế), bao gồm Unit tests, Property-based testing (Hypothesis), kiểm tra Expected-Echo, Web Companion API và Benchmark âm học:
+Toàn bộ hệ thống được kiểm thử tự động với **86 kịch bản** (85 passed, 1 skipped chờ tập dữ liệu show diễn thực tế), bao gồm Unit tests, Property-based testing (Hypothesis), kiểm tra Expected-Echo, Web Companion API, các tính năng chẩn đoán, Dry-run, Ring-out Wizard và Benchmark âm học:
 
 ```bash
 # Chạy toàn bộ test suite
@@ -70,6 +70,9 @@ Toàn bộ hệ thống được kiểm thử tự động với **70 kịch b�
 
 # Chạy riêng bài kiểm thử Benchmark phát hiện hú và từ chối báo động giả
 .venv/bin/pytest -v -s tests/test_detector_sim.py
+
+# Chạy riêng các bài kiểm thử tính năng mới
+.venv/bin/pytest -v tests/test_new_features.py
 ```
 
 ### Kết quả Benchmark mô phỏng thực nghiệm (Synthetic Data):
@@ -171,7 +174,61 @@ Hoặc chỉ định rõ file profile:
 
 ---
 
-## 7. Cấu Trúc Dự Án
+---
+
+## 7. Các Tính Năng Mới & Chế Độ Vận Hành Nâng Cao
+
+1. **Chế Độ Mô Phỏng Hoàn Chỉnh (Demo/Mock Mode)**:
+   - Khi không kết nối mixer thật, hệ thống tự động chạy cỗ máy `FakeXR18` với bộ sinh tín hiệu đa kênh chân thực.
+   - Giao diện hiển thị rõ ràng badge `MÔ PHỎNG (DEMO)` (màu tím), không rơi vào trạng thái "ĐANG KẾT NỐI LẠI" vô hạn.
+   - Nút **⚡ Tạo Hú Giả** (`POST /api/v1/demo/feedback`): Bắn tín hiệu hú tần số tùy chọn để kiểm chứng trọn vẹn quy trình phát hiện -> đề xuất SEMI -> soundman duyệt -> hạ notch PEQ -> tự nhả (auto-release).
+
+2. **Chế Độ Chạy Thử An Toàn (Shadow / Dry-Run Mode)**:
+   - Tham số `--dry-run` hoặc công tắc toggle trên Web Companion.
+   - Hệ thống thực hiện toàn bộ quy trình phân tích âm thanh, định vị micro hú và ghi log chi tiết "sẽ cắt gì, ở đâu, band nào" nhưng **tuyệt đối KHÔNG gửi lệnh ghi xuống mixer**.
+
+3. **Bảng Chẩn Đoán Kết Nối & Hệ Thống (Diagnostics Panel)**:
+   - Giám sát trạng thái phần cứng (Thật vs Mock), địa chỉ IP, cổng OSC, tên model và firmware mixer.
+   - Phân biệt rõ ràng giữa **Độ trễ phản hồi OSC RTT** (đo bằng ping thực tế) và **Độ trễ lý thuyết DSP** (kích thước khung Hann FFT 42.7 ms / 64.0 ms).
+   - Trạng thái đăng ký luồng RTA 100-band (`/meters/4`) kèm cơ chế tự động gia hạn mỗi 7 giây.
+   - Kiểm tra thiết bị âm thanh USB PortAudio và định tuyến 16 kênh USB Sends.
+
+4. **Thuật Toán Ring-out Tiền Show (Ring-out Wizard)**:
+   - Tự động tăng gain từ từ trên kênh được chọn trong giới hạn an toàn (+3 dB đến tối đa +6 dB), kích hoạt điểm hú cộng hưởng phòng.
+   - Tự động phát hiện và hạ notch dập tắt điểm hú.
+   - Nút Dừng Khẩn Cấp lập tức hạ gain trở lại mức ban đầu trước khi Ring-out.
+
+5. **Gợi Ý Gain Staging & Dynamics (Chỉ Gợi Ý)**:
+   - Phân tích tín hiệu âm lượng thời gian thực và đề xuất thông số Gain Staging (-18 dBFS RMS), ngưỡng Compressor và Gate. Không tự ý can thiệp phần cứng.
+
+6. **Lịch Sử Notch, Hoàn Tác Từng Điểm & Xuất Báo Cáo**:
+   - Cho phép hoàn tác (Undo) từng notch đơn lẻ mà không cần PANIC toàn bộ.
+   - Xuất báo cáo hoạt động show diễn định dạng CSV hoặc JSON.
+
+7. **Ghi Nhật Ký Ra File (Rotating File Logging)**:
+   - Toàn bộ exception và sự kiện hệ thống được ghi vào `logs/auto_sound.log` (tối đa 5 MB x 3 bản sao lưu xoay vòng) và stream đồng thời lên Web Companion.
+
+8. **Giao Diện Trừu Tượng Cho Dòng Behringer X32 / Midas M32 (`X32Client`)**:
+   - Giao diện driver kiến trúc và mock driver định hình cấu trúc 32 kênh, 6 band PEQ và cổng 10023, chuẩn bị cho lộ trình đa mixer trong tương lai.
+
+---
+
+## 8. Hiện Trạng Kiểm Chứng: Mô Phỏng vs Phần Cứng Thật
+
+### Đã kiểm chứng 100% trong môi trường mô phỏng (Simulation):
+- 85 kịch bản kiểm thử tự động (Unit test, Property-based testing với Hypothesis, End-to-End integration).
+- Bộ tạo tín hiệu âm thanh ảo 16 kênh và thuật toán phát hiện hú FFT 2048 mẫu / RTA 100-band.
+- Tính bất biến an toàn (Safety Invariants): Không bao giờ boost quá +4 dB, giới hạn giao dịch 2 tx/s, khóa tay soundman 10s, bảo vệ dải tần EQ của ca sĩ.
+- Giao diện Web Nuxt 4 / Vue 3 Static SPA biên dịch chuẩn xác, kết nối WebSocket 2 chiều mượt mà.
+
+### CẦN KIỂM CHỨNG TRÊN PHẦN CỨNG THẬT (Khi có bàn mixer vật lý):
+1. **Độ trễ mạng OSC Ping thực tế (Real Network RTT)**: Đo đạc biến thiên RTT và độ ổn định gói tin UDP trên switch mạng có dây và Wi-Fi thực tế tại địa điểm biểu diễn.
+2. **Luồng USB 18x18 PortAudio kéo dài nhiều giờ**: Kiểm tra tỷ lệ xruns và độ trôi mẫu (clock drift) khi thu âm liên tục trong suốt buổi diễn kéo dài 3-4 tiếng.
+3. **Bộ dữ liệu kiểm định show diễn thật (`test_detector_benchmark_real_data`)**: Thu thập tối thiểu 100 mẫu âm thanh có nhãn "hú / không hú" từ micro sân khấu thật bằng công cụ `/api/v1/audio/record` để tinh chỉnh ngưỡng phát hiện tối ưu.
+
+---
+
+## 9. Cấu Trúc Dự Án
 
 ```text
 xklive/
@@ -182,19 +239,23 @@ xklive/
 ├── device_profiles/                    # Hồ sơ phần cứng (xr18, xr12, xr16, mr12)
 ├── frontend/                           # Giao diện Nuxt 4 / Vue 3 SPA + Tailwind CSS
 ├── src/auto_sound/
-│   ├── core/models.py                  # Dataclass lõi hệ thống
-│   ├── mixer/xair.py                   # X-Air Driver: Discovery, OSC, Metadata, PEQ Safety
+│   ├── core/models.py                  # Dataclass lõi hệ thống & CapabilityMap
+│   ├── core/ringout.py                 # Auto Room Ring-Out cân phòng trước show
+│   ├── mixer/xair.py                   # X-Air Driver: Capability Probe, Discovery, OSC, PEQ Safety
 │   ├── audio/ring_buffer.py            # SPSC Ring Buffer 18 kênh zero-allocation
 │   ├── audio/io.py                     # Thu âm USB PortAudio & Virtual Generator
 │   ├── dsp/detector.py                 # Bộ dò hú FFT 2048 mẫu & Harmonic Rejection
 │   ├── dsp/rta_detector.py             # Bộ dò hú phổ RTA 100-band cho XR12/XR16
 │   ├── dsp/localizer.py                # Two-Factor Mic Localizer định vị micro hú
+│   ├── dsp/gain_staging.py             # Auto Preamp Gain Staging 10s & Clip Guardian
+│   ├── dsp/talkover.py                 # Smart FX Auto-Talkover (Ducking Reverb/Delay)
 │   ├── safety/controller.py            # Safety Controller: Rate limit, Probe, Reclaim
 │   ├── safety/snapshot.py              # Sao lưu và phục hồi Snapshot PEQ
 │   ├── app/cli.py                      # Runtime điều phối toàn trình
 │   ├── app/server.py                   # FastAPI REST API + WebSocket Server
 │   └── web/dist/                       # Bản dựng tĩnh Nuxt 4 / Vue 3 SPA
-└── tests/                              # 70 kịch bản kiểm thử tự động
+├── tools/hardware_check.py             # Bộ kiểm chứng phần cứng thật (M5 Benchmark)
+└── tests/                              # 86 kịch bản kiểm thử tự động (85 pass / 1 skipped)
 ```
 
 ---

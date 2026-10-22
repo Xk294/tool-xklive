@@ -227,3 +227,50 @@ def test_snapshot_api_endpoints(mock_engine) -> None:
         assert resp_rollback.status_code == 200
         assert resp_rollback.json()["success"] is True
         assert resp_rollback.json()["duration_s"] < 1.0
+
+
+def test_v2_api_endpoints_integration(mock_engine) -> None:
+    """Kiểm tra tích hợp toàn diện các endpoint V2: Dry-run, Gain, Talkover, Wizard và Undo."""
+    app = create_app(engine=mock_engine, mock_mode=True)
+    with TestClient(app) as client:
+        # 1. Dry-run toggle hỗ trợ cả dry_run lẫn enabled alias
+        r1 = client.post("/api/v1/dry_run", json={"dry_run": True})
+        assert r1.status_code == 200
+        assert r1.json()["dry_run"] is True
+
+        r2 = client.post("/api/v1/dry_run", json={"enabled": False})
+        assert r2.status_code == 200
+        assert r2.json()["dry_run"] is False
+
+        # 2. Talkover & Clip-Guardian toggle
+        r_to = client.post("/api/v1/talkover/toggle")
+        assert r_to.status_code == 200
+        assert "enabled" in r_to.json()
+
+        r_cg = client.post("/api/v1/clip-guardian/toggle")
+        assert r_cg.status_code == 200
+        assert "enabled" in r_cg.json()
+
+        r_to_status = client.get("/api/v1/talkover/status")
+        assert r_to_status.status_code == 200
+        assert "is_ducked" in r_to_status.json()
+
+        # 3. Gain staging calibrate & status
+        r_gain_st = client.get("/api/v1/gain/status")
+        assert r_gain_st.status_code == 200
+
+        r_cal = client.post("/api/v1/gain/calibrate/1")
+        assert r_cal.status_code == 200
+        assert r_cal.json()["success"] is True
+
+        # 4. Wizard start & stop với dwell_time_s alias
+        r_wiz_start = client.post(
+            "/api/v1/wizard/start",
+            json={"channel": 1, "max_boost_db": 2.0, "dwell_time_s": 0.5, "target": "main"},
+        )
+        assert r_wiz_start.status_code == 200
+        assert r_wiz_start.json()["success"] is True
+
+        r_wiz_stop = client.post("/api/v1/wizard/stop")
+        assert r_wiz_stop.status_code == 200
+        assert r_wiz_stop.json()["success"] is True

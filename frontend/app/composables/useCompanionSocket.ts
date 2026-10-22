@@ -56,9 +56,14 @@ export interface LogEntry {
 export function useCompanionSocket() {
   const { t } = useI18n()
 
-  const mixerStatus = ref<'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('DISCONNECTED')
+  const mixerStatus = ref<'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'MOCK'>('DISCONNECTED')
+  const isMockMode = ref(false)
+  const dryRun = ref(false)
   const mixerModel = ref('XR18 v1.18')
   const latencyMs = ref(64.0)
+  const rttMs = ref<number | null>(null)
+  const dspLatencyMs = ref<number>(42.7)
+  const firmwareReason = ref('')
   const xruns = ref(0)
   const isLanRta = ref(false)
   const currentMode = ref<'auto' | 'semi' | 'manual'>('semi')
@@ -74,6 +79,26 @@ export function useCompanionSocket() {
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let logIdCounter = 1
+
+  function playAlertChime() {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioCtx) return
+      const ctx = new AudioCtx()
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.setValueAtTime(880, ctx.currentTime)
+      gain.gain.setValueAtTime(0.12, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start()
+      osc.stop(ctx.currentTime + 0.25)
+    } catch {
+      // AudioContext policy
+    }
+  }
 
   function addLog(
     text: string,
@@ -110,7 +135,7 @@ export function useCompanionSocket() {
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
-      mixerStatus.value = 'CONNECTED'
+      mixerStatus.value = isMockMode.value ? 'MOCK' : 'CONNECTED'
       addLog(t('log.connected'), 'approved', 'log.connected')
     }
 
@@ -124,26 +149,36 @@ export function useCompanionSocket() {
     }
 
     ws.onclose = () => {
-      mixerStatus.value = 'RECONNECTING'
+      mixerStatus.value = isMockMode.value ? 'MOCK' : 'RECONNECTING'
       addLog(t('log.disconnected'), 'warning', 'log.disconnected')
       reconnectTimer = setTimeout(connect, 1500)
     }
 
     ws.onerror = () => {
-      mixerStatus.value = 'DISCONNECTED'
+      mixerStatus.value = isMockMode.value ? 'MOCK' : 'DISCONNECTED'
     }
   }
 
   function handleMessage(msg: any) {
     if (msg.type === 'state_snapshot') {
       currentMode.value = msg.status.mode
-      mixerStatus.value = msg.status.mixer_state
+      isMockMode.value = !!msg.status.mock_mode
+      dryRun.value = !!msg.status.dry_run
+      rttMs.value = msg.status.rtt_ms ?? null
+      dspLatencyMs.value = msg.status.dsp_latency_ms ?? 42.7
+      firmwareReason.value = msg.status.firmware_reason ?? ''
+      mixerStatus.value = isMockMode.value ? 'MOCK' : msg.status.mixer_state
       mixerModel.value = msg.status.firmware ? `${msg.status.model} v${msg.status.firmware}` : msg.status.model
-      latencyMs.value = msg.status.latency_ms ?? msg.status.dsp_latency_ms ?? msg.status.rtt_ms ?? 0
+      latencyMs.value = msg.status.latency_ms ?? msg.status.dsp_latency_ms ?? 42.7
       xruns.value = msg.status.xruns
       isLanRta.value = msg.status.lan_rta_mode
       activeNotches.value = msg.notches || []
+
+      const prevCount = pendingProposals.value.length
       pendingProposals.value = msg.proposals || []
+      if (currentMode.value === 'semi' && pendingProposals.value.length > prevCount) {
+        playAlertChime()
+      }
     } else if (msg.type === 'telemetry_frame') {
       if (msg.meters) {
         meters.value = msg.meters.slice(0, 16)
@@ -158,6 +193,12 @@ export function useCompanionSocket() {
       const count = msg.released_count ?? 0
       addLog(t('log.panicTriggered', { count }), 'panic', 'log.panicTriggered', { count })
       refreshNotches()
+    } else if (msg.type === 'log_event') {
+      if (msg.record) {
+        const lvl = msg.record.level
+        const logType = lvl === 'CRITICAL' || lvl === 'ERROR' ? 'panic' : (lvl === 'WARNING' ? 'warning' : 'normal')
+        addLog(msg.record.message, logType)
+      }
     } else if (['proposal_resolved', 'notch_updated', 'mode_updated'].includes(msg.type)) {
       refreshStatus()
       refreshNotches()
@@ -191,6 +232,25 @@ export function useCompanionSocket() {
       addLog(t('log.modeChanged', { mode: modeLabel }), 'approved', 'log.modeChanged', { mode: modeLabel })
     } catch (e: any) {
       alert(t('errors.modeChange', { msg: e.message }))
+    }
+  }
+
+  async function toggleDryRun(enabled?: boolean) {
+    const target = enabled !== undefined ? enabled : !dryRun.value
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/dry_run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: target })
+      })
+      const data = await res.json()
+      if (data.success) {
+        dryRun.value = data.dry_run
+        const msg = dryRun.value ? t('dryRun.enabled') : t('dryRun.disabled')
+        addLog(msg, dryRun.value ? 'warning' : 'approved')
+      }
+    } catch (e) {
+      console.error('Failed to toggle dry-run', e)
     }
   }
 
@@ -265,6 +325,23 @@ export function useCompanionSocket() {
     }
   }
 
+  async function undoNotch(channel: number, band: number, target: string = 'channel', bus?: number | null) {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/notches/undo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, band, target, bus: bus ?? null })
+      })
+      const data = await res.json()
+      if (data.success) {
+        addLog(t('notches.released', { band }) || `Released Band ${band}`, 'approved')
+        refreshNotches()
+      }
+    } catch (e) {
+      console.error('Failed to undo notch', e)
+    }
+  }
+
   async function releaseAllNotches() {
     if (confirm(t('panic.confirmReleaseAll'))) {
       await triggerPanic()
@@ -301,11 +378,106 @@ export function useCompanionSocket() {
     }
   }
 
+  async function triggerFakeFeedback(channel: number = 1, freqHz: number = 2500, gain: number = -6.0) {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/demo/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, freq_hz: freqHz, gain })
+      })
+      const data = await res.json()
+      if (data.success) {
+        addLog(t('demo.success', { channel, freq: freqHz }), 'warning')
+      }
+    } catch (e) {
+      console.error('Failed to trigger fake feedback', e)
+    }
+  }
+
+  function exportReport(format: 'json' | 'csv' = 'json') {
+    const url = `${getApiBase()}/api/v1/report/export?format=${format}`
+    window.open(url, '_blank')
+  }
+
+  async function fetchDiagnostics() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/diagnostics`)
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to fetch diagnostics', e)
+      return null
+    }
+  }
+
+  async function fetchRoutingCheck() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/audio/routing-check`)
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to fetch routing check', e)
+      return null
+    }
+  }
+
+  async function fetchDynamicsSuggestions() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/dynamics/suggestions`)
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to fetch dynamics suggestions', e)
+      return null
+    }
+  }
+
+  async function startWizard(channel: number = 1, maxBoost: number = 3.0, dwellTime: number = 1.5) {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/wizard/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: 'main',
+          channel,
+          max_boost_db: maxBoost,
+          step_interval_s: dwellTime,
+          dwell_time_s: dwellTime
+        })
+      })
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to start wizard', e)
+      return { success: false, detail: String(e) }
+    }
+  }
+
+  async function stopWizard() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/wizard/stop`, { method: 'POST' })
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to stop wizard', e)
+      return { success: false }
+    }
+  }
+
+  async function getWizardStatus() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/wizard/status`)
+      return await res.json()
+    } catch (e) {
+      console.error('Failed to get wizard status', e)
+      return null
+    }
+  }
+
   async function refreshStatus() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/status`)
       const data = await res.json()
       xruns.value = data.xruns
+      isMockMode.value = !!data.mock_mode
+      dryRun.value = !!data.dry_run
+      rttMs.value = data.rtt_ms ?? null
+      dspLatencyMs.value = data.dsp_latency_ms ?? 42.7
     } catch (e) {
       console.error(e)
     }
@@ -353,8 +525,13 @@ export function useCompanionSocket() {
 
   return {
     mixerStatus,
+    isMockMode,
+    dryRun,
     mixerModel,
     latencyMs,
+    rttMs,
+    dspLatencyMs,
+    firmwareReason,
     xruns,
     isLanRta,
     currentMode,
@@ -366,15 +543,25 @@ export function useCompanionSocket() {
     peakHoldBins,
     eventLogs,
     setMode,
+    toggleDryRun,
     triggerPanic,
     undoPanic,
     approveProposal,
     rejectProposal,
     snoozeProposal,
     releaseNotch,
+    undoNotch,
     releaseAllNotches,
     takeSnapshot,
     rollbackSnapshot,
+    triggerFakeFeedback,
+    exportReport,
+    fetchDiagnostics,
+    fetchRoutingCheck,
+    fetchDynamicsSuggestions,
+    startWizard,
+    stopWizard,
+    getWizardStatus,
     clearLogs,
     addLog
   }

@@ -80,6 +80,26 @@ class FakeXR18:
             self.params[f"/main/st/eq/{band}/q"] = 0.5
             self.params[f"/main/st/eq/{band}/on"] = 1
 
+        # X-Air Native Main LR (/lr)
+        self.params["/lr/mix/on"] = 1
+        self.params["/lr/mix/fader"] = 0.75
+        self.params["/lr/eq/on"] = 1
+        for band in range(1, 7):
+            self.params[f"/lr/eq/{band}/type"] = 2
+            self.params[f"/lr/eq/{band}/f"] = 0.5
+            self.params[f"/lr/eq/{band}/g"] = 0.5
+            self.params[f"/lr/eq/{band}/q"] = 0.5
+            self.params[f"/lr/eq/{band}/on"] = 1
+
+        # Preamp Headamp Gain (1-16)
+        for ch in range(1, 17):
+            self.params[f"/headamp/{ch:02d}/gain"] = 0.5
+
+        # FX Return (rtn 1-4)
+        for rtn in range(1, 5):
+            self.params[f"/rtn/{rtn}/mix/on"] = 1
+            self.params[f"/rtn/{rtn}/mix/fader"] = 0.75
+
     def set_fake_feedback_bin(self, bin_idx: Optional[int]) -> None:
         """Inject tiếng hú ảo tại bin RTA chỉ định (None = tắt hú)."""
         with self._lock:

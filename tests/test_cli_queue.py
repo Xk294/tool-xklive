@@ -89,3 +89,25 @@ def test_manual_override_detection_callback() -> None:
         assert "chỉnh tay" in dec.reason
     finally:
         app.stop()
+
+
+def test_manual_override_detection_main_lr_both_dialects() -> None:
+    """Xác nhận phát hiện can thiệp tay trên Main L/R đối với cả 2 dialect /lr/eq và /main/st/eq."""
+    cfg_path = Path(__file__).resolve().parent.parent / "device_profiles" / "xr18.toml"
+    config = AppConfig.load(cfg_path)
+    mapper = ParameterMapper.from_profile(cfg_path)
+    app = AutoSoundApp(config=config, mapper=mapper, mock_mode=True, mode="auto")
+    try:
+        now_before = time.time()
+        # 1. Dialect X-Air: /lr/eq/3/g
+        app._on_mixer_param_change("/lr/eq/3/g", 0.6)
+        lock_until = app.safety_state.channel_locks.get(0, 0.0)
+        assert lock_until >= now_before + 9.5
+
+        # 2. Dialect X32: /main/st/eq/4/g
+        now_before2 = time.time()
+        app._on_mixer_param_change("/main/st/eq/4/g", 0.4)
+        lock_until2 = app.safety_state.channel_locks.get(0, 0.0)
+        assert lock_until2 >= now_before2 + 9.5
+    finally:
+        app.stop()

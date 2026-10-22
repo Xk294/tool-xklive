@@ -3,7 +3,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional, List
-from auto_sound.core.models import ConnectionState, PEQBand
+from auto_sound.core.models import ConnectionState, PEQBand, CapabilityMap
 
 
 class MixerDriver(ABC):
@@ -42,6 +42,14 @@ class MixerDriver(ABC):
         """Đọc trạng thái tham số PEQ hiện tại của kênh và band."""
         pass
 
+    def get_peq_gain_cached(self, channel: int, band: int, target: str = "ch") -> Optional[float]:
+        """Truy xuất nhanh gain_db từ cache tham số không block I/O."""
+        return None
+
+    def set_fader(self, target: str, index: int, val: float) -> bool:
+        """Đặt giá trị fader chuẩn hóa [0.0, 1.0] cho ch, bus, rtn, hoặc lr."""
+        return False
+
     @abstractmethod
     def subscribe_meters(self, enable: bool = True) -> None:
         """Bật/tắt nhận luồng meter nhị phân thời gian thực."""
@@ -72,6 +80,14 @@ class MixerDriver(ABC):
     def get_device_info(self) -> dict:
         """Lấy thông tin thiết bị (Model, Tên, Firmware, IP)."""
         return {"model": "Generic", "name": "Mixer", "firmware": "Unknown", "ip": "127.0.0.1"}
+
+    def get_capability_map(self) -> CapabilityMap:
+        """Lấy bản đồ năng lực thực tế của mixer."""
+        return CapabilityMap()
+
+    def probe_capabilities(self, timeout_s: float = 0.25) -> CapabilityMap:
+        """Thăm dò năng lực mixer (chỉ đọc)."""
+        return self.get_capability_map()
 
     def get_channel_info(self, channel: int) -> dict:
         """Lấy thông tin kênh (Tên, Màu, Trạng thái Mute)."""

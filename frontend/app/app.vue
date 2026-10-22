@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useHead } from '#imports'
 import { useI18n } from '~/composables/useI18n'
 import { useCompanionSocket } from '~/composables/useCompanionSocket'
@@ -11,6 +11,10 @@ import ProposalsQueue from '~/components/ProposalsQueue.vue'
 import NotchesTable from '~/components/NotchesTable.vue'
 import SnapshotSection from '~/components/SnapshotSection.vue'
 import EventLogBox from '~/components/EventLogBox.vue'
+import DiagnosticsModal from '~/components/DiagnosticsModal.vue'
+import WizardModal from '~/components/WizardModal.vue'
+import DemoFeedbackModal from '~/components/DemoFeedbackModal.vue'
+import DynamicsModal from '~/components/DynamicsModal.vue'
 
 const { lang } = useI18n()
 
@@ -22,8 +26,12 @@ useHead({
 
 const {
   mixerStatus,
+  isMockMode,
+  dryRun,
   mixerModel,
   latencyMs,
+  rttMs,
+  dspLatencyMs,
   xruns,
   isLanRta,
   currentMode,
@@ -35,17 +43,31 @@ const {
   peakHoldBins,
   eventLogs,
   setMode,
+  toggleDryRun,
   triggerPanic,
   undoPanic,
   approveProposal,
   rejectProposal,
   snoozeProposal,
   releaseNotch,
+  undoNotch,
   releaseAllNotches,
   takeSnapshot,
   rollbackSnapshot,
+  triggerFakeFeedback,
+  exportReport,
+  fetchDiagnostics,
+  fetchDynamicsSuggestions,
+  startWizard,
+  stopWizard,
+  getWizardStatus,
   clearLogs
 } = useCompanionSocket()
+
+const isDiagOpen = ref(false)
+const isWizardOpen = ref(false)
+const isDemoFeedbackOpen = ref(false)
+const isDynamicsOpen = ref(false)
 
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
@@ -70,12 +92,21 @@ onUnmounted(() => {
     <!-- TOP STICKY STATUS BAR -->
     <StatusBar
       :mixer-status="mixerStatus"
+      :is-mock-mode="isMockMode"
+      :dry-run="dryRun"
       :mixer-model="mixerModel"
+      :rtt-ms="rttMs"
+      :dsp-latency-ms="dspLatencyMs"
       :latency-ms="latencyMs"
       :xruns="xruns"
       :is-lan-rta="isLanRta"
       :current-mode="currentMode"
       @set-mode="setMode"
+      @toggle-dry-run="toggleDryRun()"
+      @open-diagnostics="isDiagOpen = true"
+      @open-wizard="isWizardOpen = true"
+      @open-demo-feedback="isDemoFeedbackOpen = true"
+      @open-dynamics="isDynamicsOpen = true"
     >
       <template #panic>
         <PanicControl
@@ -104,7 +135,9 @@ onUnmounted(() => {
         <NotchesTable
           :notches="activeNotches"
           @release="releaseNotch"
+          @undo="undoNotch"
           @release-all="releaseAllNotches"
+          @export="exportReport"
         />
       </div>
 
@@ -128,6 +161,33 @@ onUnmounted(() => {
         />
       </div>
     </main>
+
+    <!-- MODALS -->
+    <DiagnosticsModal
+      :is-open="isDiagOpen"
+      :fetch-diagnostics="fetchDiagnostics"
+      @close="isDiagOpen = false"
+    />
+
+    <WizardModal
+      :is-open="isWizardOpen"
+      :start-wizard="startWizard"
+      :stop-wizard="stopWizard"
+      :get-wizard-status="getWizardStatus"
+      @close="isWizardOpen = false"
+    />
+
+    <DemoFeedbackModal
+      :is-open="isDemoFeedbackOpen"
+      :trigger-feedback="triggerFakeFeedback"
+      @close="isDemoFeedbackOpen = false"
+    />
+
+    <DynamicsModal
+      :is-open="isDynamicsOpen"
+      :fetch-dynamics="fetchDynamicsSuggestions"
+      @close="isDynamicsOpen = false"
+    />
   </div>
 </template>
 

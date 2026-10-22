@@ -10,6 +10,7 @@ __pycache__/
 # Testing & Cache
 .pytest_cache/
 .hypothesis/
+soak_report.json
 
 # Audio Data & Recordings
 *.wav
@@ -29,6 +30,8 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/
+.postman/
+postman/
 
 # Frontend (Nuxt 4 / Node)
 node_modules/

@@ -35,8 +35,9 @@ class ActionProposal:
     q: float
     bus: Optional[int] = None
     band: Optional[int] = None
-    target: str = "ch"  # "ch", "main", "bus"
+    target: str = "ch"  # "ch", "main", "bus", "lr"
     reason: str = "Acoustic feedback detected"
+    original_gain_db: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -60,3 +61,35 @@ class DetectionCandidate:
     persistence_frames: int
     last_energy_db: float
     is_confirmed: bool = False
+
+
+@dataclass
+class CapabilityMap:
+    """Bản đồ năng lực thật của Mixer sau khi probe qua OSC."""
+    model: str = "Unknown"
+    firmware: str = "Unknown"
+    ip: str = "127.0.0.1"
+    port: int = 10024
+    num_channels: int = 18
+    num_busses: int = 6
+    channel_peq_bands: int = 4
+    bus_peq_bands: int = 6
+    lr_peq_bands: int = 6
+    lr_prefix: str = "/lr"  # Chuẩn X-Air là /lr, không phải /main/st
+    supports_headamp: bool = True
+    headamp_prefix: str = "/headamp"
+    supports_fx_return: bool = True
+    fx_return_prefix: str = "/rtn"
+    supports_automix: bool = False
+    automix_prefix: Optional[str] = None
+    verified_paths: dict[str, bool] = field(default_factory=dict)
+    probe_completed: bool = False
+
+
+@dataclass(frozen=True)
+class ParameterSnapshot:
+    """Lưu trữ giá trị gốc chính xác trước khi can thiệp để hoàn tác tuyệt đối."""
+    address: str
+    original_value: float | int
+    target_type: str = "ch"  # "ch", "bus", "lr", "headamp", "rtn"
+    timestamp: float = 0.0

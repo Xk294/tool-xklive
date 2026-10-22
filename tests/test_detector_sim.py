@@ -3,6 +3,7 @@
 import math
 import os
 import time
+import wave
 from pathlib import Path
 from typing import Tuple
 import numpy as np
@@ -163,11 +164,41 @@ def test_detector_benchmark_real_data() -> None:
     Tự động bỏ qua (SKIP) nếu thư mục data/real_recordings chưa có dữ liệu.
     """
     real_data_dir = Path(__file__).resolve().parent.parent / "data" / "real_recordings"
-    if not real_data_dir.exists() or not list(real_data_dir.glob("*.wav")):
+    wav_files = sorted(list(real_data_dir.glob("*.wav"))) if real_data_dir.exists() else []
+    if not real_data_dir.exists() or len(wav_files) < 100:
         pytest.skip(
-            "CHƯA CÓ DỮ LIỆU THẬT: Thư mục 'data/real_recordings/' chưa có file ghi âm (.wav). "
-            "Cần thu thập tối thiểu 100 mẫu hú thật và 250 mẫu âm nhạc ở Giai đoạn C."
+            "CHƯA CÓ ĐỦ DỮ LIỆU THẬT TỪ PHẦN CỨNG: Thư mục 'data/real_recordings/' cần tối thiểu 100 mẫu thu thật. "
+            "Dùng script tools/hardware_check.py trên mixer thật để thu thập bộ dữ liệu kiểm chứng."
         )
 
-    # Khi có dữ liệu thật (Giai đoạn C sẽ đọc và benchmark tại đây)
-    pass
+    # Khi có dữ liệu thật: benchmark detector trên toàn bộ các file .wav trong thư mục
+    detector = FeedbackDetector(sample_rate=48000, confirmation_frames=3)
+    wav_files = sorted(list(real_data_dir.glob("*.wav")))
+    assert len(wav_files) > 0
+
+    feedback_detected = 0
+    feedback_total = 0
+    music_fp = 0
+    music_total = 0
+
+    for wf in wav_files:
+        with wave.open(str(wf), "rb") as f:
+            n_frames = f.getnframes()
+            data = f.readframes(n_frames)
+            sig = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
+
+        props, _ = run_detector_on_audio(detector, channel=1, audio=sig)
+        if wf.name.startswith("feedback"):
+            feedback_total += 1
+            if props:
+                feedback_detected += 1
+        else:
+            music_total += 1
+            if props:
+                music_fp += 1
+
+    if feedback_total > 0:
+        recall = feedback_detected / feedback_total
+        assert recall >= 0.80, f"Recall trên tập mẫu quá thấp: {recall*100:.1f}% ({feedback_detected}/{feedback_total})"
+
+    assert music_fp == 0, f"Có {music_fp} ca báo động giả trên mẫu âm nhạc!"

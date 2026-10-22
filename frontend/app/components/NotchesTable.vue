@@ -11,7 +11,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'release', channel: number, band: number, target: string, bus?: number | null): void
+  (e: 'undo', channel: number, band: number, target: string, bus?: number | null): void
   (e: 'releaseAll'): void
+  (e: 'export', format: 'json' | 'csv'): void
 }>()
 
 const tick = ref(0)
@@ -63,7 +65,11 @@ onUnmounted(() => {
   <div class="c-card">
     <div class="c-card-title">
       <span>{{ t('notches.title') }}</span>
-      <button class="c-btn-small" @click="emit('releaseAll')">{{ t('common.releaseAll') }}</button>
+      <div class="actions-group">
+        <button class="c-btn-small" :title="t('notches.exportCsv')" @click="emit('export', 'csv')">{{ t('notches.exportCsv') }}</button>
+        <button class="c-btn-small" :title="t('notches.exportJson')" @click="emit('export', 'json')">{{ t('notches.exportJson') }}</button>
+        <button class="c-btn-small btn-release-all" @click="emit('releaseAll')">{{ t('common.releaseAll') }}</button>
+      </div>
     </div>
 
     <div class="table-responsive">
@@ -97,7 +103,8 @@ onUnmounted(() => {
             <td>{{ n.status_code ? t(`notches.${n.status_code}`, { n: n.step_count, step: n.step_count }) : (n.step_count > 1 ? t('notches.stepping', { n: n.step_count }) : t('notches.stable')) }}</td>
             <td>
               <button
-                class="c-btn-small"
+                class="c-btn-small btn-danger"
+                :title="t('common.release')"
                 @click="emit('release', n.channel, n.band, n.target, n.bus)"
               >
                 {{ t('common.release') }}
@@ -111,6 +118,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.actions-group {
+  display: flex;
+  gap: 6px;
+}
+
 .table-responsive {
   width: 100%;
   overflow-x: auto;
@@ -147,5 +159,22 @@ table.data-table td {
 .notch-gain {
   color: var(--accent-red);
   font-weight: 700;
+}
+
+.table-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-danger {
+  color: var(--accent-red);
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.btn-release-all {
+  color: var(--accent-amber);
 }
 </style>

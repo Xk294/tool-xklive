@@ -9,7 +9,7 @@ import struct
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
-from auto_sound.core.models import ConnectionState, PEQBand
+from auto_sound.core.models import ConnectionState, PEQBand, CapabilityMap
 from auto_sound.mixer.base import MixerDriver
 from auto_sound.mixer.osc import decode_message, encode_message, OscParseError
 from auto_sound.mixer.parameter_mapper import ParameterMapper
@@ -161,6 +161,7 @@ class XAirClient(MixerDriver):
         self._channel_mutes: Dict[int, bool] = {}
         self._channel_eq_on: Dict[int, bool] = {}
         self._main_eq_on: bool = True
+        self.capability_map: CapabilityMap = CapabilityMap()
 
     def get_state(self) -> ConnectionState:
         with self._lock:
@@ -190,6 +191,7 @@ class XAirClient(MixerDriver):
             self._set_state(ConnectionState.CONNECTED)
             # Gửi ngay heartbeat đầu tiên
             self._send_raw(encode_message("/xremote"))
+            self.probe_capabilities(timeout_s=0.15)
             self.sync_mixer_state()
             return True
         else:
@@ -385,7 +387,7 @@ class XAirClient(MixerDriver):
                     self._channel_eq_on[ch] = bool(int(args[0]))
             except Exception:
                 pass
-        elif address == "/main/st/eq/on" and len(args) > 0:
+        elif address in ("/main/st/eq/on", "/lr/eq/on") and len(args) > 0:
             with self._lock:
                 self._main_eq_on = bool(int(args[0]))
 
@@ -425,16 +427,18 @@ class XAirClient(MixerDriver):
         # Cập nhật cache tham số
         if len(args) > 0:
             val = args[0]
+            is_query_reply = False
             with self._lock:
                 self._params_cache[address] = val
                 evt = self._pending_queries.get(address)
                 if evt:
                     evt.set()
+                    is_query_reply = True
 
             is_expected = self._is_expected_echo(address, val)
 
             # Nếu thay đổi không do lệnh nội bộ của hệ thống phát sinh -> Kích hoạt callback (soundman chỉnh tay)
-            if not is_expected and self.on_param_update:
+            if not is_expected and not is_query_reply and self.on_param_update:
                 try:
                     self.on_param_update(address, val)
                 except Exception:
@@ -540,9 +544,10 @@ class XAirClient(MixerDriver):
         if band <= 0:
             return False
 
-        if target == "main" or channel == 0:
-            prefix = f"/main/st/eq/{band}"
-            master_eq_addr = "/main/st/eq/on"
+        if target in ("main", "lr") or channel == 0:
+            lr_p = self.capability_map.lr_prefix if hasattr(self, "capability_map") else "/lr"
+            prefix = f"{lr_p}/eq/{band}"
+            master_eq_addr = f"{lr_p}/eq/on"
         elif target == "bus" or channel > 16:
             bus_idx = channel if target == "bus" else (channel - 16)
             prefix = f"/bus/{bus_idx}/eq/{band}"
@@ -576,10 +581,46 @@ class XAirClient(MixerDriver):
 
         return ok_f and ok_g and ok_q and ok_on
 
+    def get_peq_gain_cached(self, channel: int, band: int, target: str = "ch") -> Optional[float]:
+        """Truy xuất nhanh giá trị gain_db từ cache tham số nội bộ O(1), không block mạng I/O."""
+        if target in ("main", "lr") or channel == 0:
+            lr_p = self.capability_map.lr_prefix if hasattr(self, "capability_map") else "/lr"
+            addr = f"{lr_p}/eq/{band}/g"
+        elif target == "bus" or channel > 16:
+            bus_idx = channel if target == "bus" else (channel - 16)
+            addr = f"/bus/{bus_idx}/eq/{band}/g"
+        else:
+            if channel <= 0:
+                return None
+            addr = f"/ch/{channel:02d}/eq/{band}/g"
+
+        with self._lock:
+            g_norm = self._params_cache.get(addr)
+
+        if g_norm is not None:
+            return self.mapper.gain.from_float(float(g_norm))
+        return None
+
+    def set_fader(self, target: str, index: int, val: float) -> bool:
+        """Đặt giá trị fader chuẩn hóa [0.0, 1.0] cho ch, bus, rtn, hoặc lr không block."""
+        val_clamped = max(0.0, min(1.0, float(val)))
+        if target in ("main", "lr") or index == 0:
+            lr_p = self.capability_map.lr_prefix if hasattr(self, "capability_map") else "/lr"
+            addr = f"{lr_p}/mix/fader"
+        elif target == "bus":
+            addr = f"/bus/{index}/mix/fader"
+        elif target == "rtn":
+            addr = f"/rtn/{index}/mix/fader"
+        else:
+            addr = f"/ch/{index:02d}/mix/fader"
+        self._send_raw(encode_message(addr, val_clamped))
+        return True
+
     def get_peq(self, channel: int, band: int, target: str = "ch") -> Optional[PEQBand]:
         """Đọc tham số PEQ hiện tại và quy đổi sang đơn vị vật lý."""
-        if target == "main" or channel == 0:
-            prefix = f"/main/st/eq/{band}"
+        if target in ("main", "lr") or channel == 0:
+            lr_p = self.capability_map.lr_prefix if hasattr(self, "capability_map") else "/lr"
+            prefix = f"{lr_p}/eq/{band}"
         elif target == "bus" or channel > 16:
             bus_idx = channel if target == "bus" else (channel - 16)
             prefix = f"/bus/{bus_idx}/eq/{band}"
@@ -609,13 +650,15 @@ class XAirClient(MixerDriver):
 
     def sync_mixer_state(self, num_channels: int = 16) -> None:
         """Truy vấn metadata tên kênh, màu sắc, mute và EQ master từ mixer."""
+        lr_p = self.capability_map.lr_prefix if hasattr(self, "capability_map") else "/lr"
         for ch in range(1, num_channels + 1):
             ch_str = f"{ch:02d}"
             self._send_raw(encode_message(f"/ch/{ch_str}/config/name"))
             self._send_raw(encode_message(f"/ch/{ch_str}/config/color"))
             self._send_raw(encode_message(f"/ch/{ch_str}/mix/on"))
             self._send_raw(encode_message(f"/ch/{ch_str}/eq/on"))
-        self._send_raw(encode_message("/main/st/eq/on"))
+        self._send_raw(encode_message(f"{lr_p}/eq/on"))
+        self._send_raw(encode_message(f"{lr_p}/mix/fader"))
 
     def get_device_info(self) -> Dict[str, Any]:
         """Lấy thông tin nhận diện mixer phần cứng và trạng thái truyền thông OSC."""
@@ -668,6 +711,124 @@ class XAirClient(MixerDriver):
                 if res is not None:
                     detected = max(detected, b)
         return max(4, detected)
+
+    def get_capability_map(self) -> CapabilityMap:
+        """Lấy bản đồ năng lực của mixer."""
+        with self._lock:
+            return self.capability_map
+
+    def probe_capabilities(self, timeout_s: float = 0.25) -> CapabilityMap:
+        """Thăm dò toàn diện năng lực và dialect OSC của mixer (chỉ GET / ĐỌC)."""
+        cap = CapabilityMap(
+            ip=self.mixer_ip or self.ip,
+            port=self.port,
+            model=self.mixer_model or "Unknown",
+            firmware=self.mixer_firmware or "Unknown",
+        )
+
+        # 1. Thăm dò đường dẫn Main LR: /lr vs /main/st
+        lr_fader = self._query_param_sync("/lr/mix/fader", timeout=timeout_s)
+        if lr_fader is not None:
+            cap.lr_prefix = "/lr"
+            cap.verified_paths["/lr/mix/fader"] = True
+            lr_eq = self._query_param_sync("/lr/eq/1/f", timeout=timeout_s)
+            cap.verified_paths["/lr/eq/1/f"] = (lr_eq is not None)
+        else:
+            main_st_fader = self._query_param_sync("/main/st/mix/fader", timeout=timeout_s)
+            main_st_eq = self._query_param_sync("/main/st/eq/on", timeout=timeout_s)
+            if main_st_fader is not None or main_st_eq is not None:
+                cap.lr_prefix = "/main/st"
+                cap.verified_paths["/main/st/mix/fader"] = (main_st_fader is not None)
+            else:
+                cap.lr_prefix = "/lr"
+                cap.verified_paths["/lr/mix/fader"] = False
+
+        # 2. Thăm dò số lượng kênh khả dụng
+        if self._query_param_sync("/ch/16/mix/fader", timeout=timeout_s) is not None:
+            cap.num_channels = 16
+            cap.verified_paths["/ch/16/mix/fader"] = True
+            if self._query_param_sync("/ch/18/mix/fader", timeout=timeout_s) is not None:
+                cap.num_channels = 18
+        elif self._query_param_sync("/ch/12/mix/fader", timeout=timeout_s) is not None:
+            cap.num_channels = 12
+            cap.verified_paths["/ch/12/mix/fader"] = True
+        else:
+            cap.num_channels = 16
+
+        # 3. Thăm dò số lượng Bus (Aux)
+        if self._query_param_sync("/bus/6/mix/fader", timeout=timeout_s) is not None:
+            cap.num_busses = 6
+            cap.verified_paths["/bus/6/mix/fader"] = True
+        elif self._query_param_sync("/bus/4/mix/fader", timeout=timeout_s) is not None:
+            cap.num_busses = 4
+            cap.verified_paths["/bus/4/mix/fader"] = True
+        elif self._query_param_sync("/bus/2/mix/fader", timeout=timeout_s) is not None:
+            cap.num_busses = 2
+            cap.verified_paths["/bus/2/mix/fader"] = True
+        else:
+            cap.num_busses = 6
+
+        # 4. Thăm dò số band EQ trên Channel, Bus và LR
+        cap.channel_peq_bands = 4
+        if self._query_param_sync("/bus/1/eq/6/f", timeout=timeout_s) is not None:
+            cap.bus_peq_bands = 6
+        elif self._query_param_sync("/bus/1/eq/4/f", timeout=timeout_s) is not None:
+            cap.bus_peq_bands = 4
+
+        lr_b6 = f"{cap.lr_prefix}/eq/6/f"
+        if self._query_param_sync(lr_b6, timeout=timeout_s) is not None:
+            cap.lr_peq_bands = 6
+        else:
+            cap.lr_peq_bands = 6
+
+        # 5. Thăm dò Preamp Headamp Gain (/headamp/01/gain)
+        headamp_check = self._query_param_sync("/headamp/01/gain", timeout=timeout_s)
+        if headamp_check is not None:
+            cap.supports_headamp = True
+            cap.headamp_prefix = "/headamp"
+            cap.verified_paths["/headamp/01/gain"] = True
+        else:
+            headamp_x32 = self._query_param_sync("/headamp/001/gain", timeout=timeout_s)
+            if headamp_x32 is not None:
+                cap.supports_headamp = True
+                cap.headamp_prefix = "/headamp"
+                cap.verified_paths["/headamp/001/gain"] = True
+            else:
+                cap.supports_headamp = False
+                cap.verified_paths["/headamp/01/gain"] = False
+
+        # 6. Thăm dò FX Return (/rtn/1/mix/fader hoặc /rtn/1/mix/on)
+        rtn_check = self._query_param_sync("/rtn/1/mix/fader", timeout=timeout_s)
+        if rtn_check is not None:
+            cap.supports_fx_return = True
+            cap.fx_return_prefix = "/rtn"
+            cap.verified_paths["/rtn/1/mix/fader"] = True
+        else:
+            cap.supports_fx_return = False
+            cap.verified_paths["/rtn/1/mix/fader"] = False
+
+        # 7. Thăm dò Automixer (X-Air Dugan / config / amix)
+        amix_check = self._query_param_sync("/config/amix/enable", timeout=timeout_s)
+        if amix_check is not None:
+            cap.supports_automix = True
+            cap.automix_prefix = "/config/amix"
+            cap.verified_paths["/config/amix/enable"] = True
+        else:
+            amix_alt = self._query_param_sync("/amix/01", timeout=timeout_s)
+            if amix_alt is not None:
+                cap.supports_automix = True
+                cap.automix_prefix = "/amix"
+                cap.verified_paths["/amix/01"] = True
+            else:
+                cap.supports_automix = False
+                cap.automix_prefix = None
+                cap.verified_paths["/config/amix/enable"] = False
+
+        cap.probe_completed = True
+        with self._lock:
+            self.capability_map = cap
+
+        return cap
 
     def get_channel_info(self, channel: int) -> Dict[str, Any]:
         """Lấy metadata cấu hình của kênh (Tên, Màu, Mute, EQ)."""

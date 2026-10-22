@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 from auto_sound.core.models import ActionProposal, Decision, PEQBand
 
 
@@ -20,6 +20,7 @@ class ActiveNotch:
     probe_step_count: int = 1
     target: str = "ch"                # "ch" hoặc "bus"
     bus: Optional[int] = None         # Bus 1-6 nếu target == "bus"
+    original_gain_db: float = 0.0     # Giá trị gain gốc trước khi hệ thống can thiệp để khôi phục chính xác
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,12 @@ class SafetyState:
     auto_release_enabled: bool = True
 
 
-def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[SafetyState, Decision]:
+def decide(
+    state: SafetyState,
+    proposal: ActionProposal,
+    now: float,
+    get_current_gain: Optional[Callable[[int, int, str], float]] = None,
+) -> Tuple[SafetyState, Decision]:
     """Hàm thuần túy: Nhận trạng thái + đề xuất + thời gian thực tế -> Trả về (Trạng thái mới, Quyết định).
     
     Tuyệt đối không thực hiện bất kỳ lệnh I/O, mạng hoặc gọi đồng hồ ngầm bên trong hàm.
@@ -184,11 +190,24 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
     new_notches = dict(state.active_notches)
     step_count = 1
     target_gain = state.probe_step_db  # Mặc định -3.0 dB
+    orig_gain = proposal.original_gain_db
 
     if existing_notch_key is not None and not is_reclaimed:
         prev_notch = state.active_notches[existing_notch_key]
         step_count = prev_notch.probe_step_count + 1
         target_gain = max(state.max_cut_db, prev_notch.current_gain_db + state.probe_step_db)
+        orig_gain = prev_notch.original_gain_db
+    elif is_reclaimed:
+        orig_gain = reclaimed_notch.original_gain_db
+    elif get_current_gain is not None and allocated_band is not None:
+        target_type = "bus" if is_bus else ("main" if ch == 0 else "ch")
+        target_num = target_bus if is_bus else ch
+        try:
+            current_g = get_current_gain(target_num, allocated_band, target_type)
+            if current_g is not None:
+                orig_gain = float(current_g)
+        except Exception:
+            pass
 
     clamped_q = min(10.0, max(0.3, proposal.q))
 
@@ -202,8 +221,9 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
         is_probing=True,
         last_updated_time=now,
         probe_step_count=step_count,
-        target="bus" if is_bus else "ch",
+        target="bus" if is_bus else ("main" if ch == 0 else "ch"),
         bus=target_bus if is_bus else None,
+        original_gain_db=orig_gain,
     )
     new_notches[(target_key_id, allocated_band)] = notch_record
 
@@ -229,8 +249,9 @@ def decide(state: SafetyState, proposal: ActionProposal, now: float) -> Tuple[Sa
         gain_db=target_gain,
         q=clamped_q,
         bus=target_bus if is_bus else None,
-        target="bus" if is_bus else "ch",
+        target="bus" if is_bus else ("main" if ch == 0 else "ch"),
         reason=reason_str,
+        original_gain_db=orig_gain,
     )
 
     return new_state, Decision(
@@ -262,7 +283,7 @@ def handle_manual_override(
 
 
 def panic_rollback(state: SafetyState, now: float) -> Tuple[SafetyState, List[ActionProposal]]:
-    """Cơ chế Dừng khẩn cấp / Rollback: Hoàn tác toàn bộ các notch hệ thống về 0 dB trong 1 thao tác."""
+    """Cơ chế Dừng khẩn cấp / Rollback: Hoàn tác toàn bộ các notch hệ thống về đúng giá trị gốc trong 1 thao tác."""
     rollback_proposals: List[ActionProposal] = []
 
     for (t_id, band), notch in state.active_notches.items():
@@ -272,11 +293,12 @@ def panic_rollback(state: SafetyState, now: float) -> Tuple[SafetyState, List[Ac
                 channel=0 if is_bus else notch.channel,
                 band=band,
                 freq_hz=notch.freq_hz,
-                gain_db=0.0,  # Nhả về phẳng
+                gain_db=notch.original_gain_db,  # Khôi phục chính xác giá trị gốc đã chụp
                 q=notch.q,
                 bus=notch.bus if is_bus else None,
                 target="bus" if is_bus else ("main" if notch.channel == 0 else "ch"),
-                reason="PANIC: Hoàn tác toàn bộ notch về 0 dB",
+                reason=f"PANIC: Hoàn tác notch về giá trị gốc ({notch.original_gain_db:+.1f}dB)",
+                original_gain_db=notch.original_gain_db,
             )
         )
 
@@ -321,10 +343,11 @@ def check_auto_release(
 
         idle_time = now - notch.last_updated_time
         if idle_time >= state.auto_release_wait_s:
+            target_baseline = notch.original_gain_db
             new_gain = round(notch.current_gain_db + step_db, 1)
 
-            if new_gain >= 0.0:
-                # Nhả hoàn toàn về 0 dB: giải phóng band khỏi danh sách notch hoạt động
+            if new_gain >= target_baseline:
+                # Nhả hoàn toàn về giá trị gốc của soundman: giải phóng band khỏi danh sách notch hoạt động
                 new_notches.pop((t_id, band), None)
                 tgt_name = f"Bus {notch.bus}" if is_bus else f"Kênh {notch.channel}"
                 proposals.append(
@@ -332,11 +355,12 @@ def check_auto_release(
                         channel=0 if is_bus else notch.channel,
                         band=band,
                         freq_hz=notch.freq_hz,
-                        gain_db=0.0,
+                        gain_db=target_baseline,
                         q=notch.q,
                         bus=notch.bus if is_bus else None,
                         target="bus" if is_bus else ("main" if notch.channel == 0 else "ch"),
-                        reason=f"Auto-release: Nhả hoàn toàn Band {band} về 0.0dB sau {idle_time:.1f}s ổn định trên {tgt_name}",
+                        reason=f"Auto-release: Nhả hoàn toàn Band {band} về {target_baseline:+.1f}dB sau {idle_time:.1f}s ổn định trên {tgt_name}",
+                        original_gain_db=target_baseline,
                     )
                 )
             else:
@@ -353,6 +377,7 @@ def check_auto_release(
                     probe_step_count=notch.probe_step_count,
                     target="bus" if is_bus else "ch",
                     bus=notch.bus if is_bus else None,
+                    original_gain_db=notch.original_gain_db,
                 )
                 new_notches[(t_id, band)] = updated_notch
                 tgt_name = f"Bus {notch.bus}" if is_bus else f"Kênh {notch.channel}"
@@ -366,6 +391,7 @@ def check_auto_release(
                         bus=notch.bus if is_bus else None,
                         target="bus" if is_bus else ("main" if notch.channel == 0 else "ch"),
                         reason=f"Auto-release: Nhả bước Band {band} lên {new_gain:+.1f}dB sau {idle_time:.1f}s ổn định trên {tgt_name}",
+                        original_gain_db=notch.original_gain_db,
                     )
                 )
 

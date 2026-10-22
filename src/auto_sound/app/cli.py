@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import queue
 import select
@@ -19,6 +20,7 @@ from auto_sound.core.config import AppConfig
 from auto_sound.core.models import ActionProposal, ConnectionState
 from auto_sound.dsp.detector import FeedbackDetector
 from auto_sound.dsp.rta_detector import RTADetector
+from auto_sound.dsp.talkover import TalkoverController
 from auto_sound.i18n import set_language, t
 from auto_sound.mixer.fake import FakeXR18
 from auto_sound.mixer.parameter_mapper import ParameterMapper
@@ -50,17 +52,29 @@ class AutoSoundApp:
         mapper: ParameterMapper,
         mock_mode: bool = False,
         mode: str = "auto",
+        use_real_mic: bool = False,
+        input_device: Optional[str | int] = None,
+        audible: bool = False,
     ) -> None:
         self.config = config
         self.mapper = mapper
         self.mock_mode = mock_mode
         self.mode = mode  # "auto", "semi", "manual"
+        self.use_real_mic = use_real_mic
+        self.input_device = input_device
+        self.audible = audible
+        self.dry_run: bool = False
+        self.on_log_event: Optional[Callable[[str, dict], None]] = None
+        self._active_fake_feedbacks: List[Dict[str, Any]] = []
+        self._proposals_lock: threading.Lock = threading.Lock()
+        self._safety_lock: threading.Lock = threading.Lock()
 
         self.fake_mixer: Optional[FakeXR18] = None
         self.mixer_client: Optional[XAirClient] = None
         self.audio_capture: Optional[AudioCapture] = None
         self.detector: Optional[FeedbackDetector] = None
         self.rta_detector: Optional[RTADetector] = None
+        self._audio_output: Optional[sd.OutputStream] = None
 
         self._cmd_queue: queue.Queue[ActionProposal] = queue.Queue()
         self._network_thread: Optional[threading.Thread] = None
@@ -68,14 +82,17 @@ class AutoSoundApp:
 
         whitelist = set(self.config.channels.mic_channels)
         allowed_bands = {ch: tuple(self.config.eq.auto_notch_bands) for ch in self.config.channels.mic_channels}
-        # Nếu thiết bị chạy chế độ RTA mạng LAN (XR12/XR16/MR12) -> Thêm kênh 0 (Main Stereo) vào whitelist
-        if not self.config.device.has_multichannel_usb:
-            whitelist.add(0)
-            allowed_bands[0] = tuple(self.config.eq.main_auto_notch_bands)
+        # Kênh 0 (Main Stereo LR) luôn được cấu hình an toàn cho phép can thiệp
+        whitelist.add(0)
+        allowed_bands[0] = tuple(self.config.eq.main_auto_notch_bands)
+        bus_whitelist = set(range(1, 7))
+        bus_allowed_bands = {b: tuple(self.config.eq.bus_auto_notch_bands) for b in range(1, 7)}
 
         self.safety_state = SafetyState(
             whitelist=whitelist,
             allowed_bands=allowed_bands,
+            bus_whitelist=bus_whitelist,
+            bus_allowed_bands=bus_allowed_bands,
             max_boost_db=self.config.safety.max_boost_db,
             max_cut_db=self.config.safety.max_cut_db,
             probe_step_db=self.config.safety.probe_step_db,
@@ -89,10 +106,11 @@ class AutoSoundApp:
         )
 
         self.pending_proposals: List[ActionProposal] = []
+        self.talkover_controller = TalkoverController()
         self._running = False
 
     def log_event(self, event_type: str, details: dict) -> None:
-        """Ghi nhật ký JSON có cấu trúc dùng chung timestamp cho audio và mixer."""
+        """Log structured JSON event shared across audio and control planes."""
         entry = {
             "timestamp": time.time(),
             "event": event_type,
@@ -100,6 +118,29 @@ class AutoSoundApp:
         }
         sys.stderr.write(json.dumps(entry, ensure_ascii=False) + "\n")
         sys.stderr.flush()
+        if self.on_log_event:
+            try:
+                self.on_log_event(event_type, details)
+            except Exception:
+                pass
+
+    def trigger_fake_feedback(self, channel: int = 2, freq_hz: float = 2500.0, duration_s: float = 5.0) -> None:
+        """Trigger synthetic feedback burst for simulation / testing."""
+        expire = time.time() + duration_s
+        self._active_fake_feedbacks.append({
+            "channel": channel,
+            "freq_hz": freq_hz,
+            "expire_time": expire,
+        })
+        if self.fake_mixer and hasattr(self.fake_mixer, "set_fake_feedback_bin"):
+            ratio = max(20.0, min(20000.0, freq_hz)) / 20.0
+            bin_idx = int(np.clip(np.round((np.log(ratio) / np.log(1000.0)) * 99.0), 0, 99))
+            self.fake_mixer.set_fake_feedback_bin(bin_idx)
+            threading.Timer(
+                duration_s,
+                lambda: self.fake_mixer.set_fake_feedback_bin(None) if self.fake_mixer else None,
+            ).start()
+        self.log_event("fake_feedback_triggered", {"channel": channel, "freq_hz": freq_hz, "duration_s": duration_s})
 
     def start(self) -> None:
         """Khởi động toàn bộ các thành phần."""
@@ -147,6 +188,16 @@ class AutoSoundApp:
             self.safety_state.whitelist.add(0)
             self.safety_state.allowed_bands[0] = tuple(self.config.eq.main_auto_notch_bands)
 
+        # Tự kiểm tra số band kênh PEQ thực tế trên phần cứng
+        if hasattr(self.mixer_client, "probe_channel_bands") and not self.mock_mode:
+            detected_bands = self.mixer_client.probe_channel_bands(channel=1, max_bands=6)
+            if detected_bands != self.config.eq.channel_bands_count:
+                print(
+                    f"{C_CYAN}[TỰ ĐỘNG THÍCH ỨNG] Kênh micro có {detected_bands} band PEQ "
+                    f"(cấu hình profile: {self.config.eq.channel_bands_count} bands). Tự động cập nhật!{C_RESET}"
+                )
+                self.config.eq.channel_bands_count = detected_bands
+
         # Khởi tạo detector & audio capture tùy theo loại thiết bị
         if not self.config.device.has_multichannel_usb:
             print(f"{C_CYAN}{t('cli.lan_rta_mode', model=self.config.device.name)}{C_RESET}")
@@ -176,17 +227,69 @@ class AutoSoundApp:
             )
 
             # Khởi tạo bộ thu âm thanh
-            if self.mock_mode:
+            if self.mock_mode and not self.use_real_mic:
                 sim = RoomSimulator(sample_rate=48000, seed=42)
-                # Tạo bộ sinh tín hiệu ảo có chèn tiếng hú định kỳ trên kênh 2
+                # Bộ sinh tín hiệu 16 kênh ảo sinh động (vocal, guitar, bass, keys, ambient)
                 def mock_audio_generator(frames: int, counter: int) -> np.ndarray:
                     block = np.zeros((frames, 18), dtype=np.float32)
                     t = (counter + np.arange(frames)) / 48000.0
-                    # Kênh 1: Ca sĩ hát (nốt nhạc bình thường)
-                    block[:, 0] = 0.2 * np.sin(2 * np.pi * 440.0 * t)
-                    # Kênh 2: Sau 3 giây thì chớm hú tại 2500 Hz
-                    if counter > 48000 * 2:
-                        block[:, 1] = 0.4 * np.sin(2 * np.pi * 2500.0 * t)
+                    now = time.time()
+
+                    # Kênh 1: Ca sĩ hát (vocal nốt 440 Hz + vibrato)
+                    block[:, 0] = 0.20 * np.sin(2 * np.pi * (440.0 + 5.0 * np.sin(2 * np.pi * 5.0 * t)) * t)
+                    # Kênh 2: Guitar điện (330 Hz + 660 Hz)
+                    block[:, 1] = 0.15 * np.sin(2 * np.pi * 330.0 * t) + 0.08 * np.sin(2 * np.pi * 660.0 * t)
+                    # Kênh 3: Bass guitar (110 Hz)
+                    block[:, 2] = 0.22 * np.sin(2 * np.pi * 110.0 * t)
+                    # Kênh 4: Keyboard / Synth (523 Hz)
+                    block[:, 3] = 0.12 * np.sin(2 * np.pi * 523.25 * t)
+                    # Các kênh 5-16: Tín hiệu nhạc cụ và tiếng ồn phòng nhẹ (~-45 dB)
+                    for ch_i in range(4, 16):
+                        f_base = 150.0 + (ch_i * 85.0)
+                        block[:, ch_i] = 0.06 * np.sin(2 * np.pi * f_base * t)
+
+                    # Kiểm tra mức đè Notch PEQ trên bàn mixer ảo
+                    def get_channel_attenuation(channel_num: int) -> float:
+                        if not self.fake_mixer:
+                            return 1.0
+                        min_gain = 0.0
+                        for band in (1, 2, 3, 4, 5, 6):
+                            addr = f"/ch/{channel_num:02d}/eq/{band}/g"
+                            if addr in self.fake_mixer.params:
+                                val = self.fake_mixer.params[addr]
+                                g_db = (val - 0.5) * 30.0  # Mapper: 0.5 = 0dB, 0.0 = -15dB
+                                if g_db < min_gain:
+                                    min_gain = g_db
+                        return float(10.0 ** (min_gain / 20.0))
+
+                    # Kích hoạt tiếng hú định kỳ hoặc từ lệnh UI "Tạo hú giả"
+                    # Mặc định tự động hú thử nghiệm ở giây thứ 3 nếu chưa có lệnh can thiệp
+                    auto_howl = (counter > 48000 * 2 and counter < 48000 * 7 and not self._active_fake_feedbacks)
+                    if auto_howl:
+                        att_ch2 = get_channel_attenuation(2)
+                        block[:, 1] += (0.45 * att_ch2) * np.sin(2 * np.pi * 2500.0 * t)
+
+                    # Áp dụng các tiếng hú được kích hoạt từ nút bấm UI
+                    remaining_feedbacks = []
+                    for fb in self._active_fake_feedbacks:
+                        if now < fb["expire_time"]:
+                            ch_idx = max(0, min(15, fb["channel"] - 1))
+                            att = get_channel_attenuation(fb["channel"])
+                            block[:, ch_idx] += (0.50 * att) * np.sin(2 * np.pi * fb["freq_hz"] * t)
+                            remaining_feedbacks.append(fb)
+                    self._active_fake_feedbacks = remaining_feedbacks
+
+                    # Nếu bật --audible, phát trực tiếp âm thanh ra loa ngoài máy tính
+                    if self._audio_output:
+                        stereo = np.empty((frames, 2), dtype=np.float32)
+                        stereo[:, 0] = block[:, 0] + block[:, 1] * 0.7
+                        stereo[:, 1] = block[:, 0] * 0.5 + block[:, 1] * 0.7
+                        np.clip(stereo, -0.85, 0.85, out=stereo)
+                        try:
+                            self._audio_output.write(stereo)
+                        except Exception:
+                            pass
+
                     return block
 
                 self.audio_capture = AudioCapture(
@@ -196,9 +299,26 @@ class AutoSoundApp:
                     virtual_generator=mock_audio_generator,
                 )
             else:
-                self.audio_capture = AudioCapture(channels=18, sample_rate=48000, is_virtual=False)
+                input_dev = self.input_device
+                dev_desc = f"'{input_dev}'" if input_dev else "Micro mặc định của hệ thống"
+                print(f"{C_GREEN}[MICRO THẬT]{C_RESET} Đang mở {dev_desc} đưa vào Kênh 1 của mixer...")
+                self.audio_capture = AudioCapture(
+                    channels=18,
+                    sample_rate=48000,
+                    is_virtual=False,
+                    device=input_dev,
+                )
 
             self.audio_capture.start()
+
+        if self.mock_mode and self.audible:
+            try:
+                self._audio_output = sd.OutputStream(samplerate=48000, channels=2, dtype="float32")
+                self._audio_output.start()
+                print(f"{C_GREEN}[LOA NGOÀI] Đã bật phát âm thanh mô phỏng trực tiếp ra loa máy tính.{C_RESET}")
+            except Exception as e:
+                print(f"{C_YELLOW}[LOA NGOÀI] Không thể mở cổng phát âm thanh: {e}{C_RESET}")
+                self._audio_output = None
 
         self._running = True
 
@@ -238,6 +358,13 @@ class AutoSoundApp:
             self.mixer_client.disconnect()
         if self.fake_mixer:
             self.fake_mixer.stop()
+        if self._audio_output:
+            try:
+                self._audio_output.stop()
+                self._audio_output.close()
+            except Exception:
+                pass
+            self._audio_output = None
         print(f"\n{C_YELLOW}{t('cli.stopped')}{C_RESET}")
 
     def _network_worker_loop(self) -> None:
@@ -262,7 +389,9 @@ class AutoSoundApp:
         proposals = self.rta_detector.process_rta_frame(levels_db, target_name="main")
         now = time.time()
         for prop in proposals:
-            self.safety_state, decision = decide(self.safety_state, prop, now=now)
+            self.safety_state, decision = decide(
+                self.safety_state, prop, now=now, get_current_gain=self._get_mixer_peq_gain
+            )
             if decision.approved and decision.proposal:
                 approved_p = decision.proposal
                 if self.mode == "auto":
@@ -274,30 +403,83 @@ class AutoSoundApp:
                     )
 
     def _on_mixer_param_change(self, address: str, val: Any) -> None:
-        """Tự động khóa 10s khi phát hiện Soundman can thiệp thủ công từ iPad hoặc mặt bàn mixer."""
-        # Chỉ khóa khi Soundman can thiệp vào các dải EQ cụ thể (ví dụ: /ch/02/eq/1/g, /ch/02/eq/3/f...)
-        if address.startswith("/ch/") and "/eq/" in address:
-            try:
-                parts = address.strip("/").split("/")
-                # Địa chỉ band EQ có dạng ch/02/eq/1/g (5 phần, parts[3] là số band 1-4)
-                if len(parts) >= 5 and parts[0] == "ch" and parts[2] == "eq" and parts[3].isdigit():
-                    ch = int(parts[1])
+        """Lock channel, bus, or Main LR for 10s upon detecting external manual override by sound engineer."""
+        try:
+            parts = address.strip("/").split("/")
+            now = time.time()
+            lock_dur = None
+            target_desc = ""
+            band_desc = ""
+
+            # 1. Channel EQ manual override
+            if address.startswith("/ch/") and "/eq/" in address and len(parts) >= 5 and parts[3].isdigit():
+                ch = int(parts[1])
+                with self._safety_lock:
                     if ch in self.safety_state.whitelist:
-                        now = time.time()
-                        self.safety_state = handle_manual_override(self.safety_state, channel=ch, now=now)
+                        self.safety_state = handle_manual_override(self.safety_state, channel=ch, now=now, target="ch")
+                        lock_dur = self.safety_state.lock_duration_s
                         ch_name = self.mixer_client.get_channel_name(ch) if self.mixer_client else f"CH {ch:02d}"
-                        print(
-                            f"\n{C_YELLOW}{t('cli.manual_lock', target=ch_name, band=parts[3])}{C_RESET}"
-                        )
-                        self.log_event(
-                            "manual_override_lock",
-                            {"channel": ch, "address": address, "lock_until": now + self.safety_state.lock_duration_s},
-                        )
-            except Exception:
-                pass
+                        target_desc = ch_name
+                        band_desc = parts[3]
+
+            # 2. Bus (Aux Monitor) EQ manual override
+            elif address.startswith("/bus/") and "/eq/" in address and len(parts) >= 5 and parts[3].isdigit():
+                bus = int(parts[1])
+                with self._safety_lock:
+                    if bus in self.safety_state.bus_whitelist:
+                        self.safety_state = handle_manual_override(self.safety_state, channel=0, now=now, target="bus", bus=bus)
+                        lock_dur = self.safety_state.lock_duration_s
+                        target_desc = f"Bus {bus}"
+                        band_desc = parts[3]
+
+            # 3. Main L/R EQ manual override
+            elif address.startswith("/lr/eq/") and len(parts) >= 3 and parts[2].isdigit():
+                with self._safety_lock:
+                    self.safety_state = handle_manual_override(self.safety_state, channel=0, now=now, target="ch")
+                    lock_dur = self.safety_state.lock_duration_s
+                    target_desc = "Main LR"
+                    band_desc = parts[2]
+
+            elif address.startswith("/main/st/eq/") and len(parts) >= 4 and parts[3].isdigit():
+                with self._safety_lock:
+                    self.safety_state = handle_manual_override(self.safety_state, channel=0, now=now, target="ch")
+                    lock_dur = self.safety_state.lock_duration_s
+                    target_desc = "Main LR"
+                    band_desc = parts[3]
+
+            if lock_dur is not None:
+                print(f"\n{C_YELLOW}{t('cli.manual_lock', target=target_desc, band=band_desc)}{C_RESET}")
+                self.log_event("manual_override_lock", {"target": f"{target_desc} Band {band_desc}", "address": address, "lock_until": now + lock_dur})
+        except Exception:
+            pass
+
+    def _get_mixer_peq_gain(self, channel: int, band: int, target: str) -> float:
+        """Query current PEQ gain from mixer cache (O(1) non-blocking) before overriding it."""
+        if not self.mixer_client or self.mixer_client.get_state() != ConnectionState.CONNECTED:
+            return 0.0
+        try:
+            if hasattr(self.mixer_client, "get_peq_gain_cached"):
+                cached_g = self.mixer_client.get_peq_gain_cached(channel, band, target=target)
+                if cached_g is not None:
+                    return cached_g
+            if hasattr(self.mixer_client, "_params_cache"):
+                if target in ("main", "lr") or channel == 0:
+                    lr_p = getattr(getattr(self.mixer_client, "capability_map", None), "lr_prefix", "/lr")
+                    addr = f"{lr_p}/eq/{band}/g"
+                elif target == "bus":
+                    addr = f"/bus/{channel}/eq/{band}/g"
+                else:
+                    addr = f"/ch/{channel:02d}/eq/{band}/g"
+                with getattr(self.mixer_client, "_lock", threading.Lock()):
+                    g_norm = self.mixer_client._params_cache.get(addr)
+                if g_norm is not None:
+                    return self.mapper.gain.from_float(float(g_norm))
+        except Exception:
+            pass
+        return 0.0
 
     def _send_proposal_to_mixer(self, prop: ActionProposal) -> bool:
-        """Thực thi gửi lệnh notch PEQ đã được phê duyệt sang mixer và xác nhận."""
+        """Send approved PEQ notch command to mixer and verify."""
         if not self.mixer_client or self.mixer_client.get_state() != ConnectionState.CONNECTED:
             print(f"\n{C_RED}{t('cli.network_error')}{C_RESET}")
             return False
@@ -310,6 +492,23 @@ class AutoSoundApp:
             ch_name = self.mixer_client.get_channel_name(prop.channel) if self.mixer_client else f"CH {prop.channel:02d}"
             target_name = f"{ch_name} (Ch {prop.channel:02d})"
         assert prop.band is not None
+
+        if self.dry_run:
+            print(
+                f"\n{C_CYAN}[DRY-RUN / SHADOW] {target_name} | Band {prop.band} | "
+                f"{prop.freq_hz:.1f}Hz | {prop.gain_db:+.1f}dB | Q={prop.q:.1f} (Không gửi mixer){C_RESET}"
+            )
+            self.log_event("shadow_notch_simulated", {
+                "target": prop.target,
+                "channel": prop.channel,
+                "band": prop.band,
+                "freq_hz": prop.freq_hz,
+                "gain_db": prop.gain_db,
+                "q": prop.q,
+                "dry_run": True,
+            })
+            return True
+
         success = self.mixer_client.set_peq(
             channel=prop.channel,
             band=prop.band,
@@ -355,14 +554,14 @@ class AutoSoundApp:
             return False
 
     def execute_proposal(self, prop: ActionProposal, async_send: bool = True) -> bool:
-        """Gửi lệnh notch PEQ sang mixer (mặc định gửi phi đồng bộ qua queue)."""
+        """Send PEQ notch proposal to mixer queue or execute synchronously."""
         if async_send:
             self._cmd_queue.put(prop)
             return True
         return self._send_proposal_to_mixer(prop)
 
     def _dsp_worker_loop(self) -> None:
-        """Worker chạy nền xử lý phân tích FFT và tự động nhả notch, hoạt động liên tục cả ở chế độ CLI lẫn Web."""
+        """Background DSP worker analyzing audio frames and managing auto-release."""
         read_buffer = np.zeros((512, 18), dtype=np.float32)
         channel_rolling_frames = {ch: np.zeros(2048, dtype=np.float32) for ch in self.config.channels.mic_channels}
         last_auto_release_check = time.time()
@@ -370,12 +569,11 @@ class AutoSoundApp:
         while self._running:
             now = time.time()
 
-            # 1. Đọc dữ liệu từ Ring Buffer nếu có ít nhất 512 mẫu
+            # 1. Read audio data from Ring Buffer
             if self.audio_capture and self.audio_capture.ring_buffer.available_read() >= 512:
                 n = self.audio_capture.ring_buffer.read(read_buffer)
                 if n == 512 and self.detector:
                     for ch in self.config.channels.mic_channels:
-                        # Bỏ qua kênh nếu đang bị Mute trên X Air để tránh phân tích và báo động giả
                         if self.mixer_client and self.mixer_client.is_channel_muted(ch):
                             continue
 
@@ -386,31 +584,62 @@ class AutoSoundApp:
 
                         proposals = self.detector.process_channel_frame(ch, rolling)
                         for prop in proposals:
-                            self.safety_state, decision = decide(self.safety_state, prop, now=now)
+                            with self._safety_lock:
+                                self.safety_state, decision = decide(
+                                    self.safety_state, prop, now=now, get_current_gain=self._get_mixer_peq_gain
+                                )
                             if decision.approved and decision.proposal:
                                 approved_p = decision.proposal
                                 if self.mode == "auto":
                                     self.execute_proposal(approved_p)
                                 else:
-                                    self.pending_proposals.append(approved_p)
+                                    with self._proposals_lock:
+                                        self.pending_proposals.append(approved_p)
                                     ch_name = self.mixer_client.get_channel_name(approved_p.channel) if self.mixer_client else f"CH {approved_p.channel:02d}"
                                     print(
                                         f"\n{C_RED}{t('cli.feedback_alert', target=ch_name, freq=approved_p.freq_hz)}{C_RESET}"
                                     )
+
+                        # 1b. Smart FX Auto-Talkover Ducking (MC nói chuyện + Nhạc dừng)
+                        if self.talkover_controller and self.talkover_controller.config.enabled:
+                            cfg = self.talkover_controller.config
+                            mic_ch = cfg.mic_channel
+                            mic_rms = float(np.sqrt(np.mean(read_buffer[:, mic_ch - 1] ** 2) + 1e-12)) if 1 <= mic_ch <= read_buffer.shape[1] else 1e-6
+                            mic_dbfs = 20.0 * math.log10(max(1e-6, mic_rms))
+
+                            music_rms_max = 1e-6
+                            for m_ch in cfg.music_channels:
+                                if 1 <= m_ch <= read_buffer.shape[1]:
+                                    m_rms = float(np.sqrt(np.mean(read_buffer[:, m_ch - 1] ** 2) + 1e-12))
+                                    if m_rms > music_rms_max:
+                                        music_rms_max = m_rms
+                            music_dbfs = 20.0 * math.log10(max(1e-6, music_rms_max))
+
+                            fader_val, _, msg = self.talkover_controller.process_frame(mic_dbfs, music_dbfs, now)
+                            if fader_val is not None and self.mixer_client and self.mixer_client.get_state() == ConnectionState.CONNECTED:
+                                fx_rtn = getattr(cfg, "fx_return_channel", 1)
+                                if hasattr(self.mixer_client, "set_fader"):
+                                    self.mixer_client.set_fader(target="rtn", index=fx_rtn, val=fader_val)
+                                elif hasattr(self.mixer_client, "_send_raw"):
+                                    self.mixer_client._send_raw(encode_message(f"/rtn/{fx_rtn}/mix/fader", fader_val))
+                            if msg:
+                                self.log_event("talkover_event", {"message": msg, "ducked": self.talkover_controller.is_ducked, "fader_val": fader_val})
             else:
                 time.sleep(0.002)
 
-            # 2. Kiểm tra Auto-Release nhả notch định kỳ mỗi 1.0 giây
-            if self.safety_state.auto_release_enabled and (now - last_auto_release_check >= 1.0):
-                self.safety_state, release_props = check_auto_release(
-                    self.safety_state, now=now, step_db=self.config.safety.auto_release_rate_db_per_s
-                )
-                for r_prop in release_props:
-                    self.execute_proposal(r_prop)
-                last_auto_release_check = now
+            # 2. Check auto-release periodically every 1.0 second
+            release_props = []
+            with self._safety_lock:
+                if self.safety_state.auto_release_enabled and (now - last_auto_release_check >= 1.0):
+                    self.safety_state, release_props = check_auto_release(
+                        self.safety_state, now=now, step_db=self.config.safety.auto_release_rate_db_per_s
+                    )
+                    last_auto_release_check = now
+            for r_prop in release_props:
+                self.execute_proposal(r_prop)
 
     def run_loop(self, max_seconds: Optional[float] = None) -> None:
-        """Vòng lặp tương tác người dùng trên giao diện terminal dòng lệnh."""
+        """CLI terminal user interaction loop."""
         start_time = time.time()
         last_display_time = 0.0
 
@@ -419,7 +648,7 @@ class AutoSoundApp:
             if max_seconds and (now - start_time >= max_seconds):
                 break
 
-            # 1. Hiển thị trạng thái định kỳ mỗi 1.5 giây
+            # 1. Periodic status display every 1.5 seconds
             if now - last_display_time >= 1.5:
                 dev_info = self.mixer_client.get_device_info() if self.mixer_client else {}
                 dev_name = dev_info.get("name") or self.config.device.name
@@ -431,7 +660,8 @@ class AutoSoundApp:
                     if self.mixer_client and self.mixer_client.get_state() == ConnectionState.CONNECTED
                     else f"{C_RED}[ĐỎ] Mất kết nối {model_name}{C_RESET}"
                 )
-                active_count = len(self.safety_state.active_notches)
+                with self._safety_lock:
+                    active_count = len(self.safety_state.active_notches)
                 queue_count = self._cmd_queue.qsize()
                 status_str = t(
                     'cli.status_line',
@@ -445,19 +675,21 @@ class AutoSoundApp:
                 sys.stdout.flush()
                 last_display_time = now
 
-            # 2. Lắng nghe phím bấm từ bàn phím (không block)
+            # 2. Non-blocking keyboard input listener
             if sys.stdin in select.select([sys.stdin], [], [], 0.02)[0]:
                 key = sys.stdin.read(1)
                 if key == " ":
-                    if self.pending_proposals:
-                        p_to_apply = self.pending_proposals.pop(0)
+                    with self._proposals_lock:
+                        p_to_apply = self.pending_proposals.pop(0) if self.pending_proposals else None
+                    if p_to_apply:
                         self.execute_proposal(p_to_apply)
                     else:
                         print(f"\n{C_CYAN}{t('cli.no_feedback')}{C_RESET}")
                 elif key in ("p", "P"):
                     print(f"\n{C_YELLOW}{t('cli.panic')}{C_RESET}")
                     self.drain_cmd_queue()
-                    self.safety_state, rollback_list = panic_rollback(self.safety_state, now=now)
+                    with self._safety_lock:
+                        self.safety_state, rollback_list = panic_rollback(self.safety_state, now=now)
                     for r_prop in rollback_list:
                         self.execute_proposal(r_prop)
                 elif key in ("q", "Q"):
@@ -477,6 +709,10 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="Địa chỉ host bind Web server (mặc định 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Cổng chạy Web server (mặc định 8000)")
     parser.add_argument("--listen-lan", action="store_true", help="Cho phép các thiết bị iPad/điện thoại trong mạng LAN truy cập (kèm mã PIN ghép nối)")
+    parser.add_argument("--dry-run", action="store_true", help="Chế độ shadow/dry-run: phân tích dò hú nhưng không gửi lệnh ghi xuống mixer")
+    parser.add_argument("--mic", action="store_true", help="Mở micro thật của máy tính để thu âm (hữu ích khi kết hợp --mock)")
+    parser.add_argument("--audible", action="store_true", help="Phát trực tiếp âm thanh mô phỏng (nhạc + tiếng hú) ra loa máy tính")
+    parser.add_argument("--input-device", default=None, help="Tên hoặc index thiết bị thu âm đầu vào (mặc định: micro hệ thống)")
     parser.add_argument("--lang", choices=["vi", "en"], default="vi", help="Ngôn ngữ hiển thị terminal (vi / en, mặc định: vi)")
     args = parser.parse_args()
 
@@ -502,14 +738,23 @@ def main() -> None:
         config.network.default_mixer_ip = args.ip
     mapper = ParameterMapper.from_profile(cfg_path)
 
-    app = AutoSoundApp(config=config, mapper=mapper, mock_mode=args.mock, mode=args.mode)
+    app = AutoSoundApp(
+        config=config,
+        mapper=mapper,
+        mock_mode=args.mock,
+        mode=args.mode,
+        use_real_mic=args.mic,
+        input_device=args.input_device,
+        audible=args.audible,
+    )
+    app.dry_run = args.dry_run
 
     if args.web:
         import uvicorn
         import webbrowser
         from auto_sound.app.server import create_app
         host = "0.0.0.0" if args.listen_lan else args.host
-        web_app = create_app(engine=app, listen_lan=args.listen_lan, mock_mode=args.mock)
+        web_app = create_app(engine=app, listen_lan=args.listen_lan, mock_mode=args.mock, dry_run=args.dry_run)
         url = f"http://{args.host}:{args.port}"
         print(f"\n============================================================")
         print(t('cli.web_running', url=url))

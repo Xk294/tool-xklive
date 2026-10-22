@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 import numpy as np
 from scipy.ndimage import median_filter
 from auto_sound.core.models import ActionProposal
@@ -51,6 +51,17 @@ class FeedbackDetector:
         # Khởi tạo cửa sổ Hann cấp phát sẵn
         self.window = np.hanning(self.frame_size).astype(np.float32)
 
+        # Buffers tiền cấp phát (Zero-Allocation steady-state DSP)
+        rfft_bins = self.frame_size // 2 + 1
+        self._windowed = np.zeros(self.frame_size, dtype=np.float32)
+        self._mag = np.zeros(rfft_bins, dtype=np.float32)
+        self._mag_db = np.zeros(rfft_bins, dtype=np.float32)
+        self._noise_floor = np.zeros(rfft_bins, dtype=np.float32)
+        self._prominence = np.zeros(rfft_bins, dtype=np.float32)
+        self._active_bins: Set[int] = set()
+        self._detected_peaks: List[tuple[int, float, float]] = []
+        self._stale_bins: List[int] = []
+
         # Tính bin tương ứng với dải tần số
         self.bin_res = self.sample_rate / self.frame_size  # ~23.44 Hz/bin @ 48kHz
         self.min_bin = max(2, int(np.floor(self.min_freq_hz / self.bin_res)))
@@ -96,20 +107,25 @@ class FeedbackDetector:
         if len(frame_samples) != self.frame_size:
             raise ValueError(f"Khung âm thanh phải có độ dài đúng {self.frame_size} mẫu")
 
-        # 1. Nhân cửa sổ Hann
-        windowed = frame_samples * self.window
+        # 1. Nhân cửa sổ Hann (In-place)
+        np.multiply(frame_samples, self.window, out=self._windowed)
 
-        # 2. Biến đổi Fourier thực (RFFT)
-        spectrum = np.fft.rfft(windowed)
-        mag = np.abs(spectrum)
-        mag_db = 20.0 * np.log10(np.maximum(mag, 1e-8))
+        # 2. Biến đổi Fourier thực (RFFT) & tính mag_db (In-place)
+        spectrum = np.fft.rfft(self._windowed)
+        np.abs(spectrum, out=self._mag)
+        np.maximum(self._mag, 1e-8, out=self._mag)
+        np.log10(self._mag, out=self._mag_db)
+        np.multiply(self._mag_db, 20.0, out=self._mag_db)
+        mag_db = self._mag_db
 
-        # 3. Ước lượng mức nền nhiễu bằng median filter cục bộ (31 bins ~ 720 Hz)
-        noise_floor = median_filter(mag_db, size=31, mode="nearest")
-        prominence = mag_db - noise_floor
+        # 3. Ước lượng mức nền nhiễu bằng median filter cục bộ (In-place)
+        median_filter(mag_db, size=31, mode="nearest", output=self._noise_floor)
+        np.subtract(mag_db, self._noise_floor, out=self._prominence)
+        prominence = self._prominence
 
         # 4. Tìm các đỉnh cục bộ (Local Peaks)
-        detected_peaks: List[tuple[int, float, float]] = []
+        self._detected_peaks.clear()
+        detected_peaks = self._detected_peaks
 
         for k in range(self.min_bin, self.max_bin):
             # Bỏ qua các tín hiệu dưới ngưỡng nhiễu nền tối thiểu (-50 dBFS)
@@ -135,43 +151,47 @@ class FeedbackDetector:
 
                     detected_peaks.append((k, exact_freq, exact_mag))
 
-        # 6. Bám bắt tiến trình tăng trưởng qua các khung liên tiếp
+        # 6. Bám bắt tiến trình tăng trưởng qua các khung liên tiếp (In-place dict reuse)
         if channel not in self._tracked_peaks:
             self._tracked_peaks[channel] = {}
 
         current_tracked = self._tracked_peaks[channel]
-        new_tracked: Dict[int, ChannelTrackedPeak] = {}
+        self._active_bins.clear()
+        active_bins = self._active_bins
         proposals: List[ActionProposal] = []
 
         for k, freq, mag_val in detected_peaks:
-            matched_prev: Optional[ChannelTrackedPeak] = None
+            active_bins.add(k)
+            matched_prev_bin: Optional[int] = None
             for offset in (0, -1, 1):
                 prev_bin = k + offset
                 if prev_bin in current_tracked:
-                    matched_prev = current_tracked[prev_bin]
+                    matched_prev_bin = prev_bin
                     break
 
-            if matched_prev is not None:
-                growth = mag_val - matched_prev.last_mag_db
+            if matched_prev_bin is not None:
+                peak_record = current_tracked[matched_prev_bin]
+                growth = mag_val - peak_record.last_mag_db
 
                 # Nếu năng lượng đang suy giảm mạnh (Decay < -1.0 dB, ví dụ cymbal tan dần):
                 # Không tăng bộ đếm chu kỳ hú
                 if growth < -1.0:
                     continue
 
-                total_growth = matched_prev.accumulated_growth_db + max(0.0, growth)
-                consecutive = matched_prev.consecutive_frames + 1
-                is_reported = matched_prev.is_reported
+                total_growth = peak_record.accumulated_growth_db + max(0.0, growth)
+                consecutive = peak_record.consecutive_frames + 1
+                is_reported = peak_record.is_reported
 
-                peak_record = ChannelTrackedPeak(
-                    bin_idx=k,
-                    freq_hz=freq,
-                    last_mag_db=mag_val,
-                    accumulated_growth_db=total_growth,
-                    consecutive_frames=consecutive,
-                    is_reported=is_reported,
-                )
-                new_tracked[k] = peak_record
+                # Cập nhật in-place thay vì cấp phát mới đối tượng
+                peak_record.bin_idx = k
+                peak_record.freq_hz = freq
+                peak_record.last_mag_db = mag_val
+                peak_record.accumulated_growth_db = total_growth
+                peak_record.consecutive_frames = consecutive
+
+                if matched_prev_bin != k:
+                    del current_tracked[matched_prev_bin]
+                    current_tracked[k] = peak_record
 
                 # Điều kiện kết luận hú:
                 # 1. Duy trì liên tục >= 3 khung (khoảng 32-42ms)
@@ -190,7 +210,7 @@ class FeedbackDetector:
                         )
             else:
                 # Đỉnh mới xuất hiện lần đầu ở khung này
-                new_tracked[k] = ChannelTrackedPeak(
+                current_tracked[k] = ChannelTrackedPeak(
                     bin_idx=k,
                     freq_hz=freq,
                     last_mag_db=mag_val,
@@ -199,5 +219,12 @@ class FeedbackDetector:
                     is_reported=False,
                 )
 
-        self._tracked_peaks[channel] = new_tracked
+        # Xóa các bin không còn xuất hiện trong khung này (tái sử dụng list đệm)
+        self._stale_bins.clear()
+        for b in current_tracked:
+            if b not in active_bins:
+                self._stale_bins.append(b)
+        for b in self._stale_bins:
+            del current_tracked[b]
+
         return proposals

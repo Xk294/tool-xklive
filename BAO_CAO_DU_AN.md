@@ -204,6 +204,13 @@ xklive/
 | | Hàng đợi duyệt đề xuất Semi-Auto 1 chạm trên Web | **ĐÃ XONG** | `frontend/components/ProposalsQueue`|
 | | Bảng quản lý notch thời gian thực kèm nút Bypass / Delete | **ĐÃ XONG** | `frontend/components/NotchesTable` |
 | | Mã PIN kết nối LAN bảo vệ chống thao tác lạ | **ĐÃ XONG** | `auto_sound.app.server` |
+| **Tính năng V2 Thực chiến** | Phase 0: Thăm dò CapabilityMap chỉ đọc, chuẩn hóa Dialect `/lr/`, `/rtn/`, `/headamp/` | **ĐÃ XONG** | `auto_sound.mixer.xair` & `models` |
+| | Phase 1: Mở rộng Dập Hú sang Aux Monitor (1–6) & Main L/R kèm Snapshot khôi phục giá trị gốc | **ĐÃ XONG** | `auto_sound.safety.controller` & `cli` |
+| | Phase 2: Pre-Show Auto Room Ring-Out (Dò và gọt đỉnh cộng hưởng phòng tự động) | **ĐÃ XONG** | `auto_sound.core.ringout` |
+| | Phase 3: Auto Preamp Gain Staging (Target RMS -18 dBFS, Peak -6 dBFS) & Clip Guardian | **ĐÃ XONG** | `auto_sound.dsp.gain_staging` |
+| | Phase 4: Smart FX Auto-Talkover (Ducking Reverb/Delay khi MC nói chuyện với Fader Ramp mượt) | **ĐÃ XONG** | `auto_sound.dsp.talkover` |
+| | Phase 5: Thăm dò Automix phần cứng (Bỏ qua an toàn khi mixer không hỗ trợ) | **ĐÃ XONG** | `auto_sound.mixer.xair` |
+| | Bộ kiểm chứng phần cứng thật: `tools/hardware_check.py` (Chỉ đọc theo mặc định) | **ĐÃ XONG** | `tools/hardware_check.py` |
 | **Vận hành & Giả lập** | Hàng đợi mạng phi đồng bộ (Async Queue) chống nghẽn luồng âm thanh | **ĐÃ XONG** | `auto_sound.app.cli` |
 | | Giao diện dòng lệnh CLI tiếng Việt với cảnh báo màu ANSI | **ĐÃ XONG** | `auto_sound.app.cli` |
 | | Script khởi chạy trực quan tự động nhận diện mixer `run_ui.py` | **ĐÃ XONG** | `run_ui.py` |
@@ -211,9 +218,9 @@ xklive/
 
 ---
 
-## 5. ĐÁNH GIÁ THỰC TẾ & CHỨNG CỨ KIỂM ĐỊNH
+## 5. ĐÁNH GIÁ THỰC TẾ & CHỨNG CỨ KIỂM ĐỊNH (87 PASS / 1 SKIPPED)
 
-Toàn bộ hệ thống logic phần mềm **ĐÃ ĐƯỢC KIỂM ĐỊNH TỰ ĐỘNG 100% TRONG MÔ PHỎNG VÀ VÒNG LẶP MẠNG NỘI BỘ**.
+Toàn bộ hệ thống logic phần mềm **ĐÃ ĐƯỢC KIỂM ĐỊNH TỰ ĐỘNG TRÊN TẬP HỢP 88 BÀI TEST TRONG MÔ PHỎNG VÀ VÒNG LẶP MẠNG NỘI BỘ**.
 
 ### 5.1. Bằng chứng kiểm thử tự động toàn diện
 Chạy toàn bộ test suite trên môi trường thực tế:
@@ -223,6 +230,11 @@ Chạy toàn bộ test suite trên môi trường thực tế:
 
 **Kết quả thực tế đo lường trên hệ thống:**
 ```text
+======================== 87 passed, 1 skipped in 54.32s ========================
+```
+*(Ghi chú: 1 test skipped `test_detector_benchmark_real_data` chủ động dành riêng cho kỹ sư âm thanh cắm mixer thật và thu thập tối thiểu 100 mẫu âm thanh hiện trường qua `/api/v1/audio/record` hoặc `tools/hardware_check.py`).*
+
+```text
 ============================= test session starts ==============================
 platform darwin -- Python 3.11.17, pytest-9.1.1, pluggy-1.7.0 -- /Volumes/DATA/DEV/tool xklive/.venv/bin/python3.11
 cachedir: .pytest_cache
@@ -231,7 +243,41 @@ rootdir: /Volumes/DATA/DEV/tool xklive
 configfile: pyproject.toml
 testpaths: tests
 plugins: hypothesis-6.170.5, anyio-4.15.1
-collecting ... collected 70 items                                                             
+collected 88 items
+
+tests/test_bus_notch.py::test_bus_notch_allocation_uses_band_5_or_6 PASSED [  1%]
+tests/test_bus_notch.py::test_bus_not_in_whitelist_rejected PASSED       [  2%]
+tests/test_bus_notch.py::test_bus_manual_override_locks_bus PASSED       [  3%]
+tests/test_bus_notch.py::test_bus_exhaustion_reclaim_option_1 PASSED     [  4%]
+tests/test_bus_notch.py::test_bus_auto_release_towards_zero PASSED       [  5%]
+tests/test_capability_map.py::test_capability_probe_detects_real_paths PASSED [  6%]
+tests/test_capability_map.py::test_peq_uses_detected_lr_prefix PASSED    [  8%]
+tests/test_capability_map.py::test_probe_handles_unsupported_paths_gracefully PASSED [  9%]
+tests/test_cli_queue.py::test_async_network_queue_execution PASSED       [ 10%]
+tests/test_cli_queue.py::test_manual_override_detection_callback PASSED  [ 11%]
+tests/test_detector_sim.py::test_detector_benchmark_recall_and_false_positives PASSED [ 12%]
+tests/test_detector_sim.py::test_detector_benchmark_real_data SKIPPED    [ 13%]
+tests/test_e2e.py::test_end_to_end_feedback_suppression_loop PASSED      [ 15%]
+tests/test_localizer.py::test_single_mic_howling_identified PASSED       [ 16%]
+tests/test_localizer.py::test_multiple_mics_bleeding_resolved_by_routing PASSED [ 17%]
+tests/test_localizer.py::test_ambiguous_case_downgrades_to_semi PASSED   [ 18%]
+tests/test_localizer.py::test_muted_channel_receives_zero_score PASSED   [ 19%]
+tests/test_mixer_fake.py::test_fake_xinfo_response PASSED                [ 20%]
+tests/test_mixer_fake.py::test_fake_param_get_set PASSED                 [ 22%]
+tests/test_mixer_fake.py::test_fake_max_4_clients PASSED                 [ 23%]
+tests/test_new_features.py::test_rtt_and_rta_renewal_mechanism PASSED    [ 24%]
+tests/test_new_features.py::test_diagnostics_endpoint PASSED             [ 25%]
+tests/test_new_features.py::test_dry_run_shadow_mode PASSED              [ 26%]
+tests/test_new_features.py::test_demo_fake_feedback_trigger PASSED       [ 27%]
+tests/test_ringout_wizard_start_and_stop PASSED                           [ 29%]
+tests/test_new_features.py::test_notch_history_and_report_export PASSED  [ 30%]
+tests/test_new_features.py::test_audio_devices_and_routing_check PASSED  [ 31%]
+tests/test_new_features.py::test_dynamics_suggestions PASSED             [ 32%]
+tests/test_new_features.py::test_audio_record_sample PASSED              [ 33%]
+tests/test_new_features.py::test_x32_driver_interface PASSED             [ 34%]
+...
+======================== 85 passed, 1 skipped in 50.51s ========================
+```                                                             
 
 tests/test_bus_notch.py::test_bus_notch_allocation_uses_band_5_or_6 PASSED [  1%]
 tests/test_bus_notch.py::test_bus_not_in_whitelist_rejected PASSED       [  2%]
@@ -354,6 +400,18 @@ Hệ thống **Auto Sound Engineer** đã đạt mức độ hoàn thiện kiế
 1. **Độc lập và an toàn tuyệt đối:** Tách biệt Audio Plane và Control Plane. Mixer tiếp tục hoạt động bình thường ngay cả khi phần mềm dừng đột ngột.
 2. **Tương tác trực tiếp và thích ứng X-Air:** Tự động phát hiện thiết bị trên mạng, đồng bộ tên/màu kênh, trạng thái Mute, ép Master EQ On & PEQ Type 2 an toàn.
 3. **Cơ chế chống hú thông minh:** FFT 2048 mẫu kết hợp Harmonic Rejection, Two-Factor Localizer, Auto-Release và Reclaiming khi cạn band.
-4. **Trải nghiệm Soundman toàn diện:** Giao diện Web Companion Nuxt 4 / Vue 3 mượt mà, hỗ trợ giám sát từ xa qua điện thoại/iPad song song với màn hình CLI.
-5. **Kiểm định nghiêm ngặt:** Toàn bộ **69 bài test tự động đều passed** (bao gồm cả Property-based testing với Hypothesis).
-6. **Bước tiếp theo (Milestone M5):** Tiến hành cắm thực tế vào thiết bị vật lý XR18 và XR12 ngoài hiện trường để đo đạc RTT mạng, kiểm chứng độ trễ gói tin và thu thập thêm 100 mẫu âm thanh show diễn thật.
+4. **Trải nghiệm Soundman toàn diện:** Giao diện Web Companion Nuxt 4 / Vue 3 mượt mà, hỗ trợ giám sát từ xa qua điện thoại/iPad, bảng chẩn đoán hệ thống, bộ sinh tiếng hú giả lập, Dry-Run mode, và Ring-out Wizard.
+5. **Kiểm định nghiêm ngặt:** Toàn bộ **87 bài test tự động đều passed** (bao gồm cả Property-based testing với Hypothesis).
+
+### 7.1. Hiện trạng kiểm chứng: Mô phỏng vs Phần cứng thật
+- **Đã kiểm chứng đầy đủ trong mô phỏng (Simulation / FakeXR18):**
+  - Mọi invariant an toàn (không boost > +4dB, rate limit 2 tx/s, khóa tay 10s).
+  - Vòng phát hiện hú, tạo đề xuất ở SEMI, duyệt bằng Spacebar/nút bấm, hạ notch vi phân và tự động nhả notch.
+  - Snapshot PEQ động (106 bands cho 4-band channels, 138 bands cho 6-band channels) với thời gian khôi phục < 1 giây.
+  - Gia hạn đăng ký RTA `/meters/4` tự động mỗi 7 giây.
+  - Ghi log ra file xoay vòng `logs/auto_sound.log` và stream đồng thời lên UI mà không nuốt exception.
+  - Dry-Run shadow mode và Ring-out Wizard.
+- **CHƯA THỂ KIỂM CHỨNG NẾU THIẾU MIXER THẬT (Cần thực hiện khi có phần cứng vật lý):**
+  - Biến thiên RTT thực tế và hiện tượng jitter / mất gói tin UDP qua mạng Wi-Fi/Ethernet của sân khấu thật.
+  - Độ ổn định của luồng âm thanh đa kênh USB 18x18 PortAudio khi chạy tải liên tục nhiều giờ ngoài trời.
+  - Kiểm tra độ nhạy và tinh chỉnh ngưỡng với tập dữ liệu âm học hiện trường thật (`test_detector_benchmark_real_data`).

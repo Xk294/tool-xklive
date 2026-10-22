@@ -218,6 +218,37 @@ def test_reclaim_shallowest_notch_on_band_exhaustion() -> None:
         assert b in (3, 4)
 
 
+def test_soundman_preset_gain_preserved_on_auto_release_and_panic() -> None:
+    """Xác nhận preset EQ gốc của soundman (ví dụ +2.5 dB) không bị mất về 0.0 khi auto-release hoặc panic."""
+    state = SafetyState(whitelist=(1, 2), allowed_bands={1: (3, 4)}, auto_release_wait_s=5.0)
+    now = 1000.0
+
+    # Soundman đã chỉnh sẵn Band 3 là +2.5 dB
+    prop = ActionProposal(channel=1, freq_hz=1000.0, gain_db=-3.0, q=8.0, original_gain_db=+2.5)
+    state, dec = decide(state, prop, now)
+    assert dec.approved is True
+    assert (1, 3) in state.active_notches
+    assert state.active_notches[(1, 3)].original_gain_db == +2.5
+
+    # 1. Kiểm tra Panic Rollback: phải trả về đúng +2.5 dB (không phải 0.0 dB)
+    state_panic, panic_props = panic_rollback(state, now + 1.0)
+    assert len(panic_props) == 1
+    assert panic_props[0].gain_db == +2.5
+
+    # 2. Kiểm tra Auto-Release: nhả từng bước và trả hoàn toàn về đúng +2.5 dB
+    # Bước 1: sau 5s nhả từ -3.0 dB lên -2.0 dB
+    state, rel_props1 = check_auto_release(state, now + 6.0, step_db=1.0)
+    assert len(rel_props1) == 1
+    assert rel_props1[0].gain_db == -2.0
+    assert state.active_notches[(1, 3)].original_gain_db == +2.5
+
+    # Bước cuối: khi new_gain chạm +2.5 dB, giải phóng notch và trả về đúng +2.5 dB
+    state, rel_props_final = check_auto_release(state, now + 20.0, step_db=5.0)
+    assert len(rel_props_final) == 1
+    assert rel_props_final[0].gain_db == +2.5
+    assert (1, 3) not in state.active_notches
+
+
 def test_auto_release_recovers_band_over_time() -> None:
     """Kiểm tra Phương án 3: Notch tự nhả về 0 dB sau khi ổn định và giải phóng band."""
     state = SafetyState(

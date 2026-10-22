@@ -50,7 +50,12 @@ class AudioCapture:
         """
         if status:
             self.xrun_stats[0] += 1
-        self.ring_buffer.write(indata)
+        if indata.shape[1] < self.channels:
+            self._preallocated_block[:frames, : indata.shape[1]] = indata
+            self._preallocated_block[:frames, indata.shape[1] :] = 0.0
+            self.ring_buffer.write(self._preallocated_block[:frames, :])
+        else:
+            self.ring_buffer.write(indata)
 
     def _virtual_worker(self) -> None:
         """Bộ sinh tín hiệu âm thanh ảo phục vụ kiểm thử CI khi không có soundcard vật lý."""
@@ -89,9 +94,19 @@ class AudioCapture:
             self._virtual_thread.start()
         else:
             try:
+                # Tự động thích ứng số kênh thực tế của phần cứng đầu vào (ví dụ micro mono/stereo)
+                actual_in_channels = self.channels
+                try:
+                    dev_info = sd.query_devices(self.device, "input")
+                    max_in = int(dev_info.get("max_input_channels", self.channels))
+                    if max_in > 0:
+                        actual_in_channels = min(self.channels, max_in)
+                except Exception:
+                    pass
+
                 self._stream = sd.InputStream(
                     samplerate=self.sample_rate,
-                    channels=self.channels,
+                    channels=actual_in_channels,
                     dtype="float32",
                     blocksize=512,
                     device=self.device,
