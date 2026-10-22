@@ -14,7 +14,7 @@ This file serves as a global guardrail and bootstrap loader for Gemini and Antig
 - Licensing Constraint: 100% Permissive open-source only (MIT, BSD, Apache-2.0, Unlicense). Strictly NO GPL/AGPL or FFTW dependencies.
 
 ### 3. Verification Standard
-- All changes must pass the 70 test suite (.venv/bin/pytest -v).
+- All changes must pass the unit test suite (`npm test` / `cargo test`).
 
 ## Bootstrap Loader
 The absolute source of truth for this project's rules, stack, and guidelines is CLAUDE.md at the project root.

@@ -1,0 +1,28 @@
+[package]
+name = "auto_sound_engineer"
+version = "0.2.0"
+description = "Auto Sound Engineer - Realtime Acoustic Feedback Suppression System"
+authors = ["xk"]
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4" }
+
+[dependencies]
+tauri = { version = "2.12.5" }
+tauri-plugin-log = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+tokio = { version = "1.40", features = ["rt-multi-thread", "sync", "time", "net", "macros"] }
+rosc = "0.10"
+cpal = "0.15"
+rustfft = "6.2"
+rtrb = "0.3"
+parking_lot = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

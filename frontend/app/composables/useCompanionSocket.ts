@@ -125,8 +125,69 @@ export function useCompanionSocket() {
     eventLogs.value = []
   }
 
-  function connect() {
+  let pollInterval: ReturnType<typeof setInterval> | null = null
+
+  function isTauriEnv(): boolean {
+    return typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
+  }
+
+  function updateFromSnapshot(snapshot: any) {
+    if (!snapshot) return
+    mixerStatus.value = snapshot.mixer_status
+    mixerModel.value = snapshot.mixer_model
+    currentMode.value = snapshot.current_mode as any
+    dryRun.value = !!snapshot.dry_run
+    rttMs.value = snapshot.rtt_ms ?? null
+    dspLatencyMs.value = snapshot.dsp_latency_ms ?? 4.2
+    latencyMs.value = snapshot.latency_ms ?? 12.5
+
+    activeNotches.value = snapshot.active_notches || []
+    pendingProposals.value = snapshot.pending_proposals || []
+    channels.value = snapshot.channels || []
+    if (snapshot.meters && snapshot.meters.length > 0) {
+      meters.value = snapshot.meters.slice(0, 16)
+    }
+    if (snapshot.rta_bins && snapshot.rta_bins.length > 0) {
+      rtaBins.value = snapshot.rta_bins
+      for (let i = 0; i < snapshot.rta_bins.length; i++) {
+        peakHoldBins.value[i] = Math.max((peakHoldBins.value[i] || -60) - 0.4, snapshot.rta_bins[i])
+      }
+    }
+    if (snapshot.event_logs && snapshot.event_logs.length > 0) {
+      eventLogs.value = snapshot.event_logs
+    }
+  }
+
+  async function checkAndInitTauri(): Promise<boolean> {
+    if (!isTauriEnv()) return false
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      const snapshot: any = await invoke('get_state')
+      updateFromSnapshot(snapshot)
+
+      if (!pollInterval) {
+        pollInterval = setInterval(async () => {
+          try {
+            const s: any = await invoke('get_state')
+            updateFromSnapshot(s)
+          } catch (e) {
+            console.error('Tauri state poll error', e)
+          }
+        }, 60)
+      }
+      addLog(t('log.connected') || 'Tauri Desktop Engine connected', 'approved')
+      return true
+    } catch (e) {
+      console.warn('Tauri init failed, falling back to WebSocket', e)
+      return false
+    }
+  }
+
+  async function connect() {
     if (import.meta.server) return
+
+    const isTauri = await checkAndInitTauri()
+    if (isTauri) return
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.port === '3000' ? `${window.location.hostname}:8000` : window.location.host
@@ -217,6 +278,19 @@ export function useCompanionSocket() {
       const ok = confirm(t('modes.confirmAuto'))
       if (!ok) return
     }
+    if (isTauriEnv()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('set_mode', { mode })
+        currentMode.value = mode
+        const modeLabel = mode.toUpperCase()
+        addLog(t('log.modeChanged', { mode: modeLabel }), 'approved', 'log.modeChanged', { mode: modeLabel })
+        return
+      } catch (e: any) {
+        alert(t('errors.modeChange', { msg: e.message }))
+        return
+      }
+    }
     try {
       const res = await fetch(`${getApiBase()}/api/v1/mode`, {
         method: 'POST',
@@ -255,6 +329,17 @@ export function useCompanionSocket() {
   }
 
   async function triggerPanic() {
+    if (isTauriEnv()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('panic_reset')
+        addLog(t('log.panicTriggered', { count: activeNotches.value.length }) || 'PANIC RESET', 'panic')
+        return
+      } catch (e: any) {
+        alert(t('errors.panic', { msg: e.message }))
+        return
+      }
+    }
     try {
       const res = await fetch(`${getApiBase()}/api/v1/panic`, { method: 'POST' })
       const data = await res.json()
@@ -285,6 +370,19 @@ export function useCompanionSocket() {
   }
 
   async function approveProposal(id: string) {
+    if (isTauriEnv()) {
+      const p = pendingProposals.value.find(item => item.id === id)
+      if (p) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('approve_proposal', { channel: p.channel, freqHz: p.freq_hz })
+          return
+        } catch (e) {
+          console.error(e)
+          return
+        }
+      }
+    }
     try {
       await fetch(`${getApiBase()}/api/v1/proposals/${id}/approve`, { method: 'POST' })
       refreshProposals()
@@ -295,6 +393,19 @@ export function useCompanionSocket() {
   }
 
   async function rejectProposal(id: string) {
+    if (isTauriEnv()) {
+      const p = pendingProposals.value.find(item => item.id === id)
+      if (p) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core')
+          await invoke('reject_proposal', { channel: p.channel, freqHz: p.freq_hz })
+          return
+        } catch (e) {
+          console.error(e)
+          return
+        }
+      }
+    }
     try {
       await fetch(`${getApiBase()}/api/v1/proposals/${id}/reject`, { method: 'POST' })
       refreshProposals()
@@ -379,6 +490,17 @@ export function useCompanionSocket() {
   }
 
   async function triggerFakeFeedback(channel: number = 1, freqHz: number = 2500, gain: number = -6.0) {
+    if (isTauriEnv()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core')
+        await invoke('trigger_demo_feedback', { channel, freqHz })
+        addLog(t('demo.success', { channel, freq: freqHz }) || `Feedback demo triggered on CH${channel}`, 'warning')
+        return
+      } catch (e) {
+        console.error('Failed to trigger fake feedback in Tauri', e)
+        return
+      }
+    }
     try {
       const res = await fetch(`${getApiBase()}/api/v1/demo/feedback`, {
         method: 'POST',
@@ -519,6 +641,7 @@ export function useCompanionSocket() {
   })
 
   onUnmounted(() => {
+    if (pollInterval) clearInterval(pollInterval)
     if (reconnectTimer) clearTimeout(reconnectTimer)
     if (ws) ws.close()
   })

@@ -25,7 +25,7 @@ export default defineNuxtConfig({
   },
   nitro: {
     output: {
-      publicDir: '../src/auto_sound/web/dist'
+      publicDir: './dist'
     }
   }
 })

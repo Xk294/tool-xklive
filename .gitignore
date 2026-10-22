@@ -43,5 +43,6 @@ frontend/.output/
 frontend/dist
 frontend/dist/
 
-# Retain Compiled Static Frontend Build
-!src/auto_sound/web/dist/**
+# Tauri & Rust
+src-tauri/target/
+target/
