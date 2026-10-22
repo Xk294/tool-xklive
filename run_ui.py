@@ -22,24 +22,44 @@ if str(src_dir) not in sys.path:
 
 import socket
 from auto_sound.app.cli import main
+from auto_sound.mixer.xair import discover_mixers
 
 
-def is_mixer_available(ip: str = "192.168.1.1", port: int = 10024, timeout: float = 0.2) -> bool:
-    """Kiểm tra nhanh xem mixer phần cứng có đang online không."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(timeout)
-        # Gửi truy vấn /xinfo
-        sock.sendto(b"/xinfo\x00\x00", (ip, port))
-        data, _ = sock.recvfrom(512)
-        sock.close()
-        return len(data) > 0
-    except Exception:
-        return False
+def find_online_mixer(timeout_s: float = 0.6) -> tuple[bool, str, str]:
+    """Quét tìm mixer X-Air phần cứng trong mạng LAN."""
+    found = discover_mixers(timeout_s=timeout_s)
+    if found:
+        m = found[0]
+        return True, m["ip"], f"{m['name']} ({m['model']}, FW: {m['firmware']})"
+
+    # Thử kết nối trực tiếp IP mặc định
+    for test_ip in ("192.168.1.100", "192.168.1.1"):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(0.15)
+            # Gửi thông điệp OSC /xinfo chuẩn
+            sock.sendto(b"/xinfo\x00\x00,\x00\x00\x00", (test_ip, 10024))
+            data, _ = sock.recvfrom(512)
+            sock.close()
+            if len(data) > 0:
+                return True, test_ip, f"Mixer tại {test_ip}"
+        except Exception:
+            pass
+
+    return False, "", ""
 
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+
+    # Xác định ngôn ngữ từ CLI args
+    lang = "vi"
+    if "--lang" in args:
+        idx = args.index("--lang")
+        if idx + 1 < len(args):
+            lang = args[idx + 1]
+    from auto_sound.i18n import set_language, t
+    set_language(lang)
 
     # Tự động thêm cờ --web nếu chưa có
     if "--web" not in args:
@@ -47,13 +67,15 @@ if __name__ == "__main__":
 
     # Nếu người dùng chưa chỉ định --mock, kiểm tra kết nối tới mixer
     if "--mock" not in args and "--no-mock" not in args:
-        print("🔍 Đang tìm kiếm mixer Behringer XR18 trong mạng cục bộ...")
-        if not is_mixer_available():
-            print("💡 Không phát hiện mixer vật lý kết nối tại 192.168.1.1:10024.")
-            print("👉 Tự động bật chế độ MÔ PHỎNG (--mock) với RTA và Meter ảo để trải nghiệm giao diện.")
+        print(t("run_ui.scanning"))
+        available, mixer_ip, desc = find_online_mixer()
+        if not available:
+            print(t("run_ui.no_hardware"))
             args.append("--mock")
         else:
-            print("✅ Đã tìm thấy mixer phần cứng XR18.")
+            print(t("run_ui.found_hardware", desc=desc, ip=mixer_ip))
+            if "--ip" not in args:
+                args.extend(["--ip", mixer_ip])
 
     if "--no-mock" in args:
         args.remove("--no-mock")

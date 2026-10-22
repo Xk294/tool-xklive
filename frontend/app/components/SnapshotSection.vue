@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from '~/composables/useI18n'
+
+const { t } = useI18n()
+
 const emit = defineEmits<{
   (e: 'take'): void
   (e: 'rollback'): void
@@ -8,14 +12,14 @@ const emit = defineEmits<{
 <template>
   <div class="c-card">
     <div class="c-card-title">
-      <span>Chụp & Khôi Phục PEQ (Pre-Show)</span>
+      <span>{{ t('snapshot.title') }}</span>
     </div>
     <p class="snapshot-desc">
-      Lưu trạng thái PEQ trước giờ biểu diễn. Khôi phục toàn bộ trong &lt; 1 giây khi cần thiết.
+      {{ t('snapshot.description') }}
     </p>
     <div class="snapshot-bar">
-      <button class="c-btn-secondary" @click="emit('take')">📸 Chụp Snapshot</button>
-      <button class="c-btn-secondary rollback-btn" @click="emit('rollback')">⏪ Khôi Phục (&lt; 1s)</button>
+      <button class="c-btn-secondary" @click="emit('take')">{{ t('common.takeSnapshot') }}</button>
+      <button class="c-btn-secondary rollback-btn" @click="emit('rollback')">{{ t('common.rollback') }}</button>
     </div>
   </div>
 </template>

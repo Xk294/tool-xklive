@@ -90,31 +90,38 @@ class SnapshotManager:
         channels: Optional[List[int]] = None,
         buses: Optional[List[int]] = None,
         include_main: bool = True,
+        channel_bands_count: Optional[int] = None,
+        bus_bands_count: int = 6,
+        main_bands_count: int = 6,
     ) -> PEQSnapshot:
-        """Chụp trạng thái toàn bộ các band PEQ từ cache của mixer client."""
+        """Chụp trạng thái toàn bộ các band PEQ từ cache của mixer client.
+        Số band quét có thể tự động thích ứng hoặc cấu hình theo device profile.
+        """
         if channels is None:
             channels = list(range(1, 17))
         if buses is None:
             buses = list(range(1, 7))
 
+        ch_bands = channel_bands_count if channel_bands_count is not None else getattr(self.client, "channel_bands_count", 4)
+
         bands_dict: Dict[str, BandState] = {}
         now = time.time()
 
-        # 1. Quét Channel PEQ (Band 1-4)
+        # 1. Quét Channel PEQ (Band 1..ch_bands)
         for ch in channels:
-            for band in range(1, 5):
+            for band in range(1, ch_bands + 1):
                 prefix = f"/ch/{ch:02d}/eq/{band}"
                 bands_dict[prefix] = self._read_band_from_cache(prefix)
 
-        # 2. Quét Bus PEQ (Band 1-6)
+        # 2. Quét Bus PEQ (Band 1..bus_bands_count)
         for bus in buses:
-            for band in range(1, 7):
+            for band in range(1, bus_bands_count + 1):
                 prefix = f"/bus/{bus}/eq/{band}"
                 bands_dict[prefix] = self._read_band_from_cache(prefix)
 
-        # 3. Quét Main Stereo PEQ (Band 1-6)
+        # 3. Quét Main Stereo PEQ (Band 1..main_bands_count)
         if include_main:
-            for band in range(1, 7):
+            for band in range(1, main_bands_count + 1):
                 prefix = f"/main/st/eq/{band}"
                 bands_dict[prefix] = self._read_band_from_cache(prefix)
 

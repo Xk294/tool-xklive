@@ -23,6 +23,7 @@ class PEQBand:
     gain_db: float          # -15.0 - +15.0 dB
     q: float                # 0.3 - 10.0
     is_on: bool = True
+    filter_type: int = 2    # 2 = PEQ (Parametric EQ) trên Behringer/Midas X-Air
 
 
 @dataclass(frozen=True)

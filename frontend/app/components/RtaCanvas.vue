@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import type { ActiveNotch } from '~/composables/useCompanionSocket'
+import { useI18n } from '~/composables/useI18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   rtaBins: number[]
@@ -20,7 +23,7 @@ function renderCanvas() {
   const h = canvas.height
   ctx.clearRect(0, 0, w, h)
 
-  // 1. Vẽ lưới tọa độ dB
+  // 1. dB Grid
   ctx.strokeStyle = '#1a2230'
   ctx.lineWidth = 1
   for (let db = -10; db >= -90; db -= 20) {
@@ -34,7 +37,7 @@ function renderCanvas() {
     ctx.fillText(`${db}dB`, 4, y - 3)
   }
 
-  // 2. Vẽ đường RTA tức thời
+  // 2. Real-time RTA
   if (props.rtaBins.length > 0) {
     ctx.beginPath()
     ctx.strokeStyle = '#38bdf8'
@@ -49,7 +52,7 @@ function renderCanvas() {
     ctx.stroke()
   }
 
-  // 3. Vẽ đường Peak Hold
+  // 3. Peak Hold
   if (props.peakHoldBins.length > 0) {
     ctx.beginPath()
     ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)'
@@ -64,7 +67,7 @@ function renderCanvas() {
     ctx.stroke()
   }
 
-  // 4. Vẽ các marker của notch đang hoạt động
+  // 4. Active Notches Markers
   for (const notch of props.activeNotches) {
     const freq = notch.freq_hz
     const logPos = (Math.log10(freq) - Math.log10(20)) / (Math.log10(20000) - Math.log10(20))
@@ -79,7 +82,7 @@ function renderCanvas() {
     ctx.stroke()
     ctx.setLineDash([])
 
-    // Nhãn notch
+    // Notch label
     ctx.fillStyle = '#ef4444'
     ctx.font = '10px monospace'
     ctx.fillText(`-${Math.abs(notch.gain_db).toFixed(0)}dB`, x + 3, 20)
@@ -98,15 +101,15 @@ watch(() => [props.rtaBins, props.activeNotches], () => {
 <template>
   <div class="c-card">
     <div class="c-card-title">
-      <span>Phổ Năng Lượng RTA Thời Gian Thực (20 Hz - 20 kHz)</span>
-      <span class="rta-source">Nguồn: Multitrack USB / LAN RTA</span>
+      <span>{{ t('rta.title') }}</span>
+      <span class="rta-source">{{ t('rta.source') }}</span>
     </div>
     <div class="rta-container">
       <canvas ref="canvasRef" width="900" height="260" />
       <div class="rta-legend">
-        <div class="legend-item"><div class="legend-color bg-cyan" /> Phổ tức thời</div>
-        <div class="legend-item"><div class="legend-color bg-amber" /> Giữ đỉnh (Peak)</div>
-        <div class="legend-item"><div class="legend-color bg-red" /> Vùng Notch</div>
+        <div class="legend-item"><div class="legend-color bg-cyan" /> {{ t('rta.instant') }}</div>
+        <div class="legend-item"><div class="legend-color bg-amber" /> {{ t('rta.peak') }}</div>
+        <div class="legend-item"><div class="legend-color bg-red" /> {{ t('rta.notchZone') }}</div>
       </div>
     </div>
   </div>

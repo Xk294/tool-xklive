@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from '~/composables/useI18n'
+
+const { t } = useI18n()
+
 defineProps<{
   hasActiveNotches: boolean
 }>()
@@ -13,17 +17,19 @@ const emit = defineEmits<{
   <div class="panic-container">
     <button
       class="panic-btn"
-      title="Phím tắt: P hoặc Escape"
+      :title="t('panic.shortcut')"
+      :aria-label="t('panic.button')"
       @click="emit('panic')"
     >
-      <span>🚨 PANIC</span>
+      <span>{{ t('panic.button') }}</span>
     </button>
     <button
       class="panic-undo-btn"
-      title="Khôi phục lại notch trước khi Panic"
+      :title="t('panic.undoTitle')"
+      :aria-label="t('common.undo')"
       @click="emit('undo')"
     >
-      Hoàn tác
+      {{ t('common.undo') }}
     </button>
   </div>
 </template>

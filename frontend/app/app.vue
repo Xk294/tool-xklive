@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
+import { useHead } from '#imports'
+import { useI18n } from '~/composables/useI18n'
 import { useCompanionSocket } from '~/composables/useCompanionSocket'
 import StatusBar from '~/components/StatusBar.vue'
 import PanicControl from '~/components/PanicControl.vue'
@@ -10,6 +12,14 @@ import NotchesTable from '~/components/NotchesTable.vue'
 import SnapshotSection from '~/components/SnapshotSection.vue'
 import EventLogBox from '~/components/EventLogBox.vue'
 
+const { lang } = useI18n()
+
+useHead({
+  htmlAttrs: {
+    lang: computed(() => lang.value)
+  }
+})
+
 const {
   mixerStatus,
   mixerModel,
@@ -17,6 +27,7 @@ const {
   xruns,
   isLanRta,
   currentMode,
+  channels,
   activeNotches,
   pendingProposals,
   meters,
@@ -85,7 +96,10 @@ onUnmounted(() => {
           :active-notches="activeNotches"
         />
 
-        <MetersGrid :meters="meters" />
+        <MetersGrid
+          :meters="meters"
+          :channels="channels"
+        />
 
         <NotchesTable
           :notches="activeNotches"

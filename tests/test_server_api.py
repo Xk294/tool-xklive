@@ -44,7 +44,9 @@ def test_server_status_and_nuxt_app(mock_engine) -> None:
         data = resp_status.json()
         assert data["mode"] == "semi"
         assert data["model"] == "Behringer XR18"
-        assert data["latency_ms"] == 64.0
+        # latency_ms đã được tách thành rtt_ms (RTT thật) và dsp_latency_ms (lý thuyết DSP)
+        assert "rtt_ms" in data
+        assert "dsp_latency_ms" in data
         assert "xruns" in data
 
 

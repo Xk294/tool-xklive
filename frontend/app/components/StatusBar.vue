@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from '~/composables/useI18n'
+
+const { lang, setLang, t } = useI18n()
+
 defineProps<{
   mixerStatus: 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'
   mixerModel: string
@@ -16,43 +20,74 @@ const emit = defineEmits<{
 <template>
   <header class="status-bar">
     <div class="status-group">
-      <div class="brand">
-        <span>⚡ AUTO SOUND</span>
+      <div class="brand-wrapper" :title="t('header.title')">
+        <div class="brand">⚡ {{ t('header.brand') }}</div>
+        <div class="brand-sub">{{ t('header.subtitle') }}</div>
+      </div>
+
+      <div
+        class="lang-pill"
+        role="group"
+        :aria-label="t('header.langSwitcher')"
+      >
+        <button
+          type="button"
+          :class="['lang-btn', { active: lang === 'vi' }]"
+          :aria-label="t('header.vietnamese')"
+          @click="setLang('vi')"
+          @keydown.enter.prevent="setLang('vi')"
+          @keydown.space.prevent="setLang('vi')"
+        >
+          VI
+        </button>
+        <button
+          type="button"
+          :class="['lang-btn', { active: lang === 'en' }]"
+          :aria-label="t('header.english')"
+          @click="setLang('en')"
+          @keydown.enter.prevent="setLang('en')"
+          @keydown.space.prevent="setLang('en')"
+        >
+          EN
+        </button>
       </div>
 
       <div :class="['badge', mixerStatus.toLowerCase()]">
         <span class="pulse-dot" />
-        <span>{{ mixerStatus === 'CONNECTED' ? 'MIXER SẴN SÀNG' : (mixerStatus === 'RECONNECTING' ? 'ĐANG KẾT NỐI LẠI' : 'MẤT KẾT NỐI') }}</span>
+        <span>{{ t(`connection.${mixerStatus.toLowerCase()}`) }}</span>
       </div>
 
-      <span v-if="isLanRta" class="badge lan-rta">[THỬ NGHIỆM: LAN RTA]</span>
+      <span v-if="isLanRta" class="badge lan-rta">{{ t('device.lanRta') }}</span>
 
       <div class="telemetry">
-        <span>Mixer: <b>{{ mixerModel }}</b></span>
-        <span>Trễ: <b>{{ latencyMs.toFixed(1) }} ms</b></span>
-        <span>xruns: <b>{{ xruns }}</b></span>
+        <span>{{ t('device.mixer') }}: <b>{{ mixerModel }}</b></span>
+        <span>{{ t('device.latency') }}: <b>{{ (latencyMs ?? 0).toFixed(1) }} ms</b></span>
+        <span>{{ t('device.xruns') }}: <b>{{ xruns }}</b></span>
       </div>
     </div>
 
     <div class="status-group">
-      <div class="mode-selector">
+      <div class="mode-selector" role="group" :aria-label="t('modes.label')">
         <button
+          type="button"
           :class="['mode-btn', { active: currentMode === 'auto' }]"
           @click="emit('setMode', 'auto')"
         >
-          AUTO
+          {{ t('modes.auto') }}
         </button>
         <button
+          type="button"
           :class="['mode-btn', { active: currentMode === 'semi' }]"
           @click="emit('setMode', 'semi')"
         >
-          SEMI
+          {{ t('modes.semi') }}
         </button>
         <button
+          type="button"
           :class="['mode-btn', { active: currentMode === 'manual' }]"
           @click="emit('setMode', 'manual')"
         >
-          MANUAL
+          {{ t('modes.manual') }}
         </button>
       </div>
 
@@ -80,16 +115,60 @@ const emit = defineEmits<{
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand-wrapper {
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: 0.5px;
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.8px;
   color: var(--accent-cyan);
-  display: flex;
+  line-height: 1.1;
+}
+
+.brand-sub {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  color: var(--accent-amber);
+  opacity: 0.9;
+  line-height: 1.2;
+}
+
+.lang-pill {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 9999px;
+  padding: 2px;
+  border: 1px solid var(--border-color);
+  gap: 2px;
+}
+
+.lang-btn {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 700;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  line-height: 1;
+}
+
+.lang-btn.active {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: var(--accent-amber);
+  color: #d97706;
+  box-shadow: 0 1px 3px rgba(245, 158, 11, 0.2);
 }
 
 .badge {

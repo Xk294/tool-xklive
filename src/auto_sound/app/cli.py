@@ -19,9 +19,10 @@ from auto_sound.core.config import AppConfig
 from auto_sound.core.models import ActionProposal, ConnectionState
 from auto_sound.dsp.detector import FeedbackDetector
 from auto_sound.dsp.rta_detector import RTADetector
+from auto_sound.i18n import set_language, t
 from auto_sound.mixer.fake import FakeXR18
 from auto_sound.mixer.parameter_mapper import ParameterMapper
-from auto_sound.mixer.xair import XAirClient
+from auto_sound.mixer.xair import XAirClient, discover_mixers
 from auto_sound.safety.controller import (
     SafetyState,
     check_auto_release,
@@ -102,17 +103,29 @@ class AutoSoundApp:
 
     def start(self) -> None:
         """Khởi động toàn bộ các thành phần."""
-        print(f"{C_BOLD}=== KHỞI ĐỘNG HỆ THỐNG AUTO SOUND ENGINEER (XR18) ==={C_RESET}")
+        print(f"{C_BOLD}{t('cli.start_banner', model=self.config.device.name)}{C_RESET}")
 
         target_ip = self.config.network.default_mixer_ip
         target_port = self.config.device.port
 
         if self.mock_mode:
-            print(f"{C_YELLOW}[MÔ PHỎNG] Đang khởi động mixer ảo FakeXR18 trên localhost...{C_RESET}")
+            print(f"{C_YELLOW}{t('cli.mock_starting')}{C_RESET}")
             self.fake_mixer = FakeXR18(host="127.0.0.1", port=0)
             self.fake_mixer.start()
             target_ip = self.fake_mixer.host
             target_port = self.fake_mixer.port
+        else:
+            if target_ip == "auto":
+                print(f"{C_CYAN}{t('cli.discovering')}{C_RESET}")
+                found = discover_mixers(timeout_s=0.8, port=target_port)
+                if found:
+                    target_ip = found[0]["ip"]
+                    print(
+                        f"{C_GREEN}{t('cli.discovered', name=found[0]['name'], model=found[0]['model'], ip=target_ip, firmware=found[0]['firmware'])}{C_RESET}"
+                    )
+                else:
+                    target_ip = "192.168.1.100"
+                    print(f"{C_YELLOW}{t('cli.discover_default', ip=target_ip)}{C_RESET}")
 
         # Khởi tạo mixer client
         self.mixer_client = XAirClient(
@@ -126,10 +139,17 @@ class AutoSoundApp:
         self.mixer_client.connect()
         self.mixer_client.on_param_update = self._on_mixer_param_change
 
+        # Kiểm tra tự động thích ứng với model thực tế của mixer
+        actual_model = (self.mixer_client.mixer_model or "").upper()
+        if actual_model in ("XR12", "XR16", "MR12") and self.config.device.has_multichannel_usb:
+            print(f"{C_YELLOW}{t('cli.adapting_lan_rta', model=actual_model)}{C_RESET}")
+            self.config.device.has_multichannel_usb = False
+            self.safety_state.whitelist.add(0)
+            self.safety_state.allowed_bands[0] = tuple(self.config.eq.main_auto_notch_bands)
+
         # Khởi tạo detector & audio capture tùy theo loại thiết bị
         if not self.config.device.has_multichannel_usb:
-            print(f"{C_CYAN}[CHẾ ĐỘ RTA MẠNG LAN] {self.config.device.name} không có USB đa kênh.{C_RESET}")
-            print(f"{C_CYAN}  -> Kích hoạt tự động quét phổ RTA 100-band và hạ notch PEQ trên Main Stereo L/R.{C_RESET}")
+            print(f"{C_CYAN}{t('cli.lan_rta_mode', model=self.config.device.name)}{C_RESET}")
             self.rta_detector = RTADetector(
                 num_bins=100,
                 f_min_hz=self.config.eq.freq_min_hz,
@@ -218,7 +238,7 @@ class AutoSoundApp:
             self.mixer_client.disconnect()
         if self.fake_mixer:
             self.fake_mixer.stop()
-        print(f"\n{C_YELLOW}Hệ thống đã dừng an toàn.{C_RESET}")
+        print(f"\n{C_YELLOW}{t('cli.stopped')}{C_RESET}")
 
     def _network_worker_loop(self) -> None:
         """Worker chạy nền xử lý hàng đợi lệnh gửi tới mixer, không bao giờ làm block luồng audio."""
@@ -250,36 +270,45 @@ class AutoSoundApp:
                 else:
                     self.pending_proposals.append(approved_p)
                     print(
-                        f"\n{C_RED}[CẢNH BÁO ĐỎ] Dàn loa Main L/R chớm hú tại "
-                        f"{approved_p.freq_hz:.0f}Hz! Bấm [SPACE] để duyệt hạ notch.{C_RESET}"
+                        f"\n{C_RED}{t('cli.feedback_alert', target='Main L/R', freq=approved_p.freq_hz)}{C_RESET}"
                     )
 
     def _on_mixer_param_change(self, address: str, val: Any) -> None:
         """Tự động khóa 10s khi phát hiện Soundman can thiệp thủ công từ iPad hoặc mặt bàn mixer."""
-        if address.startswith("/ch/") and ("/eq/" in address or "/mix/" in address):
+        # Chỉ khóa khi Soundman can thiệp vào các dải EQ cụ thể (ví dụ: /ch/02/eq/1/g, /ch/02/eq/3/f...)
+        if address.startswith("/ch/") and "/eq/" in address:
             try:
-                parts = address.split("/")
-                ch = int(parts[2])
-                if ch in self.safety_state.whitelist:
-                    now = time.time()
-                    self.safety_state = handle_manual_override(self.safety_state, channel=ch, now=now)
-                    print(
-                        f"\n{C_YELLOW}[KHÓA AN TOÀN] Kỹ sư chỉnh tay Kênh {ch} — Tự động khóa can thiệp trong 10 giây.{C_RESET}"
-                    )
-                    self.log_event(
-                        "manual_override_lock",
-                        {"channel": ch, "address": address, "lock_until": now + self.safety_state.lock_duration_s},
-                    )
+                parts = address.strip("/").split("/")
+                # Địa chỉ band EQ có dạng ch/02/eq/1/g (5 phần, parts[3] là số band 1-4)
+                if len(parts) >= 5 and parts[0] == "ch" and parts[2] == "eq" and parts[3].isdigit():
+                    ch = int(parts[1])
+                    if ch in self.safety_state.whitelist:
+                        now = time.time()
+                        self.safety_state = handle_manual_override(self.safety_state, channel=ch, now=now)
+                        ch_name = self.mixer_client.get_channel_name(ch) if self.mixer_client else f"CH {ch:02d}"
+                        print(
+                            f"\n{C_YELLOW}{t('cli.manual_lock', target=ch_name, band=parts[3])}{C_RESET}"
+                        )
+                        self.log_event(
+                            "manual_override_lock",
+                            {"channel": ch, "address": address, "lock_until": now + self.safety_state.lock_duration_s},
+                        )
             except Exception:
                 pass
 
     def _send_proposal_to_mixer(self, prop: ActionProposal) -> bool:
         """Thực thi gửi lệnh notch PEQ đã được phê duyệt sang mixer và xác nhận."""
         if not self.mixer_client or self.mixer_client.get_state() != ConnectionState.CONNECTED:
-            print(f"\n{C_RED}[LỖI MẠNG] Không thể gửi lệnh: Mixer chưa kết nối!{C_RESET}")
+            print(f"\n{C_RED}{t('cli.network_error')}{C_RESET}")
             return False
 
-        target_name = "Main LR" if (prop.target == "main" or prop.channel == 0) else f"Kênh {prop.channel}"
+        if prop.target == "main" or prop.channel == 0:
+            target_name = "Main LR"
+        elif prop.target == "bus":
+            target_name = f"Bus {prop.bus}"
+        else:
+            ch_name = self.mixer_client.get_channel_name(prop.channel) if self.mixer_client else f"CH {prop.channel:02d}"
+            target_name = f"{ch_name} (Ch {prop.channel:02d})"
         assert prop.band is not None
         success = self.mixer_client.set_peq(
             channel=prop.channel,
@@ -310,8 +339,7 @@ class AutoSoundApp:
                 })
             else:
                 print(
-                    f"\n{C_GREEN}[ĐÃ HẠ NOTCH] {target_name} | Band {prop.band} | "
-                    f"{prop.freq_hz:.1f}Hz | {prop.gain_db:+.1f}dB | Q={prop.q:.1f}{C_RESET}"
+                    f"\n{C_GREEN}{t('cli.notch_applied', target=target_name, band=prop.band, freq=prop.freq_hz, gain=prop.gain_db, q=prop.q)}{C_RESET}"
                 )
             self.log_event("notch_applied", {
                 "target": prop.target,
@@ -323,7 +351,7 @@ class AutoSoundApp:
             })
             return True
         else:
-            print(f"\n{C_RED}[THẤT BẠI] Gửi lệnh PEQ tới mixer không nhận được xác nhận!{C_RESET}")
+            print(f"\n{C_RED}{t('cli.notch_failed')}{C_RESET}")
             return False
 
     def execute_proposal(self, prop: ActionProposal, async_send: bool = True) -> bool:
@@ -347,6 +375,10 @@ class AutoSoundApp:
                 n = self.audio_capture.ring_buffer.read(read_buffer)
                 if n == 512 and self.detector:
                     for ch in self.config.channels.mic_channels:
+                        # Bỏ qua kênh nếu đang bị Mute trên X Air để tránh phân tích và báo động giả
+                        if self.mixer_client and self.mixer_client.is_channel_muted(ch):
+                            continue
+
                         ch_idx = ch - 1
                         rolling = channel_rolling_frames[ch]
                         rolling[: 2048 - 512] = rolling[512:]
@@ -361,9 +393,9 @@ class AutoSoundApp:
                                     self.execute_proposal(approved_p)
                                 else:
                                     self.pending_proposals.append(approved_p)
+                                    ch_name = self.mixer_client.get_channel_name(approved_p.channel) if self.mixer_client else f"CH {approved_p.channel:02d}"
                                     print(
-                                        f"\n{C_RED}[CẢNH BÁO ĐỎ] Kênh {approved_p.channel} chớm hú tại "
-                                        f"{approved_p.freq_hz:.1f}Hz! Bấm [SPACE] để duyệt hạ notch.{C_RESET}"
+                                        f"\n{C_RED}{t('cli.feedback_alert', target=ch_name, freq=approved_p.freq_hz)}{C_RESET}"
                                     )
             else:
                 time.sleep(0.002)
@@ -389,19 +421,27 @@ class AutoSoundApp:
 
             # 1. Hiển thị trạng thái định kỳ mỗi 1.5 giây
             if now - last_display_time >= 1.5:
-                dev_name = self.config.device.name
+                dev_info = self.mixer_client.get_device_info() if self.mixer_client else {}
+                dev_name = dev_info.get("name") or self.config.device.name
+                model_name = dev_info.get("model") or self.config.device.name
+                fw_str = f" v{dev_info['firmware']}" if dev_info.get("firmware") and dev_info.get("firmware") != "Unknown" else ""
                 target_mode = "RTA MAIN" if not self.config.device.has_multichannel_usb else "USB"
                 state_str = (
-                    f"{C_GREEN}[XANH] Đã kết nối {dev_name} ({self.config.network.default_mixer_ip}){C_RESET}"
+                    f"{C_GREEN}[XANH] {model_name} '{dev_name}'{fw_str} ({dev_info.get('ip', self.config.network.default_mixer_ip)}){C_RESET}"
                     if self.mixer_client and self.mixer_client.get_state() == ConnectionState.CONNECTED
-                    else f"{C_RED}[ĐỎ] Mất kết nối {dev_name}{C_RESET}"
+                    else f"{C_RED}[ĐỎ] Mất kết nối {model_name}{C_RESET}"
                 )
                 active_count = len(self.safety_state.active_notches)
                 queue_count = self._cmd_queue.qsize()
-                sys.stdout.write(
-                    f"\rTrạng thái: {state_str} | Chế độ: {self.mode.upper()} ({target_mode}) | "
-                    f"Notch: {active_count} | Hàng đợi: {queue_count} | Phím: [SPACE]=Duyệt, [P]=PANIC, [Q]=Thoát  "
+                status_str = t(
+                    'cli.status_line',
+                    state=state_str,
+                    mode=self.mode.upper(),
+                    target_mode=target_mode,
+                    active_count=active_count,
+                    queue_count=queue_count,
                 )
+                sys.stdout.write(f"\r{status_str}")
                 sys.stdout.flush()
                 last_display_time = now
 
@@ -413,9 +453,9 @@ class AutoSoundApp:
                         p_to_apply = self.pending_proposals.pop(0)
                         self.execute_proposal(p_to_apply)
                     else:
-                        print(f"\n{C_CYAN}[THÔNG BÁO] Không có cảnh báo hú nào đang chờ duyệt.{C_RESET}")
+                        print(f"\n{C_CYAN}{t('cli.no_feedback')}{C_RESET}")
                 elif key in ("p", "P"):
-                    print(f"\n{C_YELLOW}[PANIC] Đang làm rỗng hàng đợi và hoàn tác toàn bộ notch về 0 dB...{C_RESET}")
+                    print(f"\n{C_YELLOW}{t('cli.panic')}{C_RESET}")
                     self.drain_cmd_queue()
                     self.safety_state, rollback_list = panic_rollback(self.safety_state, now=now)
                     for r_prop in rollback_list:
@@ -431,17 +471,35 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Chạy ở chế độ mô phỏng (không cần mixer và soundcard thật)")
     parser.add_argument("--mode", choices=["auto", "semi", "manual"], default="auto", help="Chế độ vận hành (mặc định: auto)")
     parser.add_argument("--profile", default="device_profiles/xr18.toml", help="Đường dẫn file cấu hình profile thiết bị")
+    parser.add_argument("--ip", default=None, help="Địa chỉ IP của mixer X-Air (hoặc 'auto' để tự động quét tìm)")
+    parser.add_argument("--discover", action="store_true", help="Quét tìm kiếm các mixer Behringer/Midas X-Air trong mạng LAN")
     parser.add_argument("--web", action="store_true", help="Khởi động Companion Web UI (Nuxt 4 / Vue 3) qua FastAPI")
     parser.add_argument("--host", default="127.0.0.1", help="Địa chỉ host bind Web server (mặc định 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Cổng chạy Web server (mặc định 8000)")
     parser.add_argument("--listen-lan", action="store_true", help="Cho phép các thiết bị iPad/điện thoại trong mạng LAN truy cập (kèm mã PIN ghép nối)")
+    parser.add_argument("--lang", choices=["vi", "en"], default="vi", help="Ngôn ngữ hiển thị terminal (vi / en, mặc định: vi)")
     args = parser.parse_args()
+
+    set_language(args.lang)
+
+    if args.discover:
+        print(f"\n{C_CYAN}🔍 Đang quét mạng LAN tìm kiếm mixer Behringer/Midas X-Air...{C_RESET}")
+        mixers = discover_mixers(timeout_s=1.0)
+        if mixers:
+            print(f"{C_GREEN}✅ Đã tìm thấy {len(mixers)} mixer X-Air:{C_RESET}")
+            for idx, m in enumerate(mixers, start=1):
+                print(f"  {idx}. Model: {m['model']:<8} | Tên: {m['name']:<18} | IP: {m['ip']:<15} | Firmware: {m['firmware']}")
+        else:
+            print(f"{C_YELLOW}⚠️ Không tìm thấy mixer nào phản hồi trên cổng 10024.{C_RESET}")
+        return
 
     cfg_path = Path(args.profile)
     if not cfg_path.exists():
         cfg_path = Path(__file__).resolve().parent.parent.parent.parent / "device_profiles" / "xr18.toml"
 
     config = AppConfig.load(cfg_path)
+    if args.ip:
+        config.network.default_mixer_ip = args.ip
     mapper = ParameterMapper.from_profile(cfg_path)
 
     app = AutoSoundApp(config=config, mapper=mapper, mock_mode=args.mock, mode=args.mode)
@@ -454,15 +512,14 @@ def main() -> None:
         web_app = create_app(engine=app, listen_lan=args.listen_lan, mock_mode=args.mock)
         url = f"http://{args.host}:{args.port}"
         print(f"\n============================================================")
-        print(f"⚡ ĐANG CHẠY NUXT 4 COMPANION UI TẠI: {url}")
-        print(f"👉 Mở trình duyệt web tại: {url}")
+        print(t('cli.web_running', url=url))
         print(f"============================================================\n")
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
         uvicorn.run(web_app, host=host, port=args.port, log_level="warning")
         return
 
     try:
-        print("💡 Mẹo: Để mở giao diện Web Nuxt 4 trực quan, chạy: auto-sound --web (hoặc: ./run_ui.py)\n")
+        print(t('cli.web_tip'))
         app.start()
         app.run_loop()
     except KeyboardInterrupt:

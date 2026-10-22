@@ -169,24 +169,28 @@ def create_app(
                 if not manager.active_connections:
                     continue
 
-                meters = [0.0] * 18
+                meters: List[float]
+                rta_levels: List[float]
+
                 if engine and engine.mixer_client:
                     meters = list(engine.mixer_client.get_meter_levels())
-
-                # Dữ liệu phổ RTA (từ LAN RTA hoặc FFT mô phỏng)
-                rta_levels = [-60.0] * 100
-                if engine and engine.mixer_client:
                     rta_levels = list(engine.mixer_client.get_rta_levels())
+                else:
+                    # Không có mixer client → trả về silence, UI tự biết ở trạng thái Demo/Disconnected
+                    meters = [0.0] * 18
+                    rta_levels = [-80.0] * 100
 
                 await manager.broadcast_json({
                     "type": "telemetry_frame",
                     "timestamp": time.time(),
                     "meters": meters,
                     "rta": rta_levels,
+                    "mock_mode": mock_mode,
                 })
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as exc:
+                logger.error("rta_broadcast_loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(0.1)
 
     @asynccontextmanager
@@ -248,33 +252,60 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def get_index() -> HTMLResponse:
-        """Phục vụ file giao diện người dùng Web Companion (ưu tiên bản Nuxt 4 / Vue 3)."""
+        """Phục vụ giao diện Nuxt 4 / Vue 3 đã build (dist/index.html)."""
         dist_index = dist_dir / "index.html"
         if dist_index.exists():
             return HTMLResponse(content=dist_index.read_text(encoding="utf-8"))
-
-        fallback_file = Path(__file__).resolve().parent.parent / "web" / "index.html"
-        if fallback_file.exists():
-            return HTMLResponse(content=fallback_file.read_text(encoding="utf-8"))
-        return HTMLResponse(content="<h1>Auto Sound Engineer Companion</h1><p>Giao diện đang được khởi tạo...</p>")
+        return HTMLResponse(content="<h1>Auto Sound Engineer Companion</h1><p>Chạy <code>cd frontend && npm run build</code> để build giao diện Nuxt.</p>")
 
     @app.get("/api/v1/status")
     async def get_status() -> Dict[str, Any]:
-        """Lấy thông tin trạng thái toàn diện của hệ thống."""
-        mixer_state = "DISCONNECTED"
-        if engine.mixer_client:
-            mixer_state = engine.mixer_client.get_state().value
+        """Lấy thông tin trạng thái toàn diện của hệ thống cùng thông tin nhận diện mixer thực tế."""
+        client = engine.mixer_client
+        dev_info = client.get_device_info() if client else {}
+
+        if client:
+            mixer_state = client.get_state().value
+        elif mock_mode:
+            mixer_state = "DEMO"
+        else:
+            mixer_state = "DISCONNECTED"
+
+        # Firmware: chỉ hiển thị nếu có thật từ /xinfo; tránh hardcode gây nhầm lẫn
+        firmware_raw = dev_info.get("firmware") if dev_info else None
+        if firmware_raw and firmware_raw not in ("Unknown", ""):
+            firmware_display = firmware_raw
+        elif mock_mode:
+            firmware_display = "SIM"
+        else:
+            firmware_display = None  # UI hiển thị "—"
+
+        # RTT OSC: chỉ có khi mixer thật kết nối và đã đo; None → UI hiển thị "—"
+        rtt_ms: Optional[float] = None
+        if client and hasattr(client, "last_rtt_ms"):
+            rtt_ms = client.last_rtt_ms
+
+        # Độ trễ DSP lý thuyết (frame_size / sample_rate): cố định theo cấu hình DSP
+        dsp_latency_ms: Optional[float] = None
+        if engine.detector:
+            dsp_latency_ms = round(engine.detector.frame_size / 48000 * 1000, 1)
 
         active_notches = len(engine.safety_state.active_notches)
         pending_props = len(engine.pending_proposals)
 
         return {
             "mixer_state": mixer_state,
+            "mock_mode": mock_mode,
             "model": engine.config.device.name,
-            "firmware": "1.18",
+            "hardware_model": dev_info.get("model") or engine.config.device.name,
+            "mixer_name": dev_info.get("name") or ("Demo Mixer" if mock_mode else "—"),
+            "firmware": firmware_display,
+            "mixer_ip": dev_info.get("ip") or (None if not mock_mode else "127.0.0.1"),
             "mode": engine.mode,
             "lan_rta_mode": not engine.config.device.has_multichannel_usb,
-            "latency_ms": 64.0,
+            "rtt_ms": rtt_ms,
+            "dsp_latency_ms": dsp_latency_ms,
+            "latency_ms": dsp_latency_ms if dsp_latency_ms is not None else 64.0,
             "xruns": int(engine.audio_capture.ring_buffer.xrun_count[0]) if engine.audio_capture else 0,
             "reconnect_count": 0,
             "uptime_s": 0.0,
@@ -282,6 +313,35 @@ def create_app(
             "pending_proposals_count": pending_props,
             "is_lan_locked": listen_lan,
         }
+
+    @app.get("/api/v1/channels")
+    async def get_channels() -> Dict[str, Any]:
+        """Lấy danh sách kênh cùng tên hiển thị, màu sắc và trạng thái Mute trực tiếp từ X-Air."""
+        channels_data = []
+        client = engine.mixer_client
+        meters = client.get_meter_levels() if client else [0.0] * 18
+        now = time.time()
+        for ch in engine.config.channels.mic_channels:
+            info = client.get_channel_info(ch) if client else {"name": f"CH {ch:02d}", "color": 0, "is_muted": False}
+            is_locked = engine.safety_state.channel_locks.get(ch, 0.0) > now
+            level = meters[ch - 1] if ch - 1 < len(meters) else 0.0
+            channels_data.append({
+                "channel": ch,
+                "name": info["name"],
+                "color": info["color"],
+                "is_muted": info["is_muted"],
+                "level": level,
+                "is_locked": is_locked,
+                "whitelisted": ch in engine.safety_state.whitelist,
+            })
+        return {"channels": channels_data}
+
+    @app.get("/api/v1/mixer/discover")
+    async def discover_mixers_api() -> Dict[str, Any]:
+        """Quét mạng LAN tìm kiếm các mixer Behringer/Midas X-Air phản hồi trên UDP port 10024."""
+        from auto_sound.mixer.xair import discover_mixers
+        found = discover_mixers(timeout_s=0.8)
+        return {"mixers": found, "count": len(found)}
 
     @app.post("/api/v1/mode")
     async def set_mode(req: ModeChangeRequest, request: Request) -> Dict[str, Any]:
@@ -313,9 +373,11 @@ def create_app(
         proposals_data = []
         now = time.time()
         for idx, prop in enumerate(engine.pending_proposals):
+            ch_name = engine.mixer_client.get_channel_name(prop.channel) if engine.mixer_client else f"CH {prop.channel:02d}"
             proposals_data.append({
                 "id": f"prop_{idx}",
                 "channel": prop.channel,
+                "channel_name": ch_name,
                 "bus": prop.bus,
                 "target": prop.target,
                 "freq_hz": prop.freq_hz,
@@ -325,6 +387,8 @@ def create_app(
                 "created_at": now,
                 "ttl_remaining_s": 15.0,
                 "reason": prop.reason,
+                "reason_code": "feedback_detected",
+                "reason_params": {"freq_hz": round(prop.freq_hz, 1)},
             })
         return {"proposals": proposals_data}
 
@@ -344,7 +408,12 @@ def create_app(
                     "proposal_id": prop_id,
                     "action": "approved",
                 })
-                return {"success": True, "message": f"Đã duyệt đề xuất tại {prop.freq_hz} Hz"}
+                return {
+                    "success": True,
+                    "message": f"Đã duyệt đề xuất tại {prop.freq_hz} Hz",
+                    "message_code": "proposal_approved",
+                    "params": {"freq_hz": prop.freq_hz},
+                }
         except Exception:
             pass
         raise HTTPException(status_code=404, detail="Không tìm thấy đề xuất")
@@ -363,7 +432,12 @@ def create_app(
                     "proposal_id": prop_id,
                     "action": "rejected",
                 })
-                return {"success": True, "message": "Đã từ chối đề xuất"}
+                return {
+                    "success": True,
+                    "message": "Đã từ chối đề xuất",
+                    "message_code": "proposal_rejected",
+                    "params": {},
+                }
         except Exception:
             pass
         raise HTTPException(status_code=404, detail="Không tìm thấy đề xuất")
@@ -387,7 +461,12 @@ def create_app(
                     }
                 )
                 record_event("channel_snoozed", {"channel": prop.channel, "duration_s": 60.0})
-                return {"success": True, "message": f"Đã tạm khóa Kênh {prop.channel} trong 60 giây"}
+                return {
+                    "success": True,
+                    "message": f"Đã tạm khóa Kênh {prop.channel} trong 60 giây",
+                    "message_code": "channel_snoozed",
+                    "params": {"channel": prop.channel, "duration_s": 60},
+                }
         except Exception:
             pass
         raise HTTPException(status_code=404, detail="Không tìm thấy đề xuất")
@@ -399,8 +478,10 @@ def create_app(
         notches_list = []
         for (target_id, band), notch in engine.safety_state.active_notches.items():
             is_bus = notch.target == "bus" or target_id < 0
+            ch_name = engine.mixer_client.get_channel_name(notch.channel) if (engine.mixer_client and not is_bus) else f"CH {notch.channel:02d}"
             notches_list.append({
                 "channel": 0 if is_bus else notch.channel,
+                "channel_name": ch_name,
                 "bus": notch.bus,
                 "band": band,
                 "freq_hz": notch.freq_hz,
@@ -410,6 +491,8 @@ def create_app(
                 "age_s": round(now - notch.last_updated_time, 1),
                 "is_locked": False,
                 "step_count": notch.probe_step_count,
+                "status_code": "stepping" if notch.probe_step_count > 1 else "stable",
+                "status_params": {"step": notch.probe_step_count},
             })
         return {"notches": notches_list}
 
@@ -444,7 +527,12 @@ def create_app(
 
             record_event("notch_released", asdict(release_prop))
             await manager.broadcast_json({"type": "notch_updated"})
-            return {"success": True, "message": f"Đã nhả Band {req.band} về 0.0 dB"}
+            return {
+                "success": True,
+                "message": f"Đã nhả Band {req.band} về 0.0 dB",
+                "message_code": "notch_released",
+                "params": {"band": req.band},
+            }
 
         raise HTTPException(status_code=404, detail="Không tìm thấy notch chỉ định")
 
@@ -476,6 +564,8 @@ def create_app(
             "success": True,
             "released_count": count,
             "message": f"Đã kích hoạt PANIC: Hoàn tác {count} notch về 0 dB",
+            "message_code": "panic_triggered",
+            "params": {"count": count},
         }
 
     @app.post("/api/v1/panic/undo")
@@ -508,7 +598,13 @@ def create_app(
         record_event("panic_undone", {"restored_notches": count})
 
         await manager.broadcast_json({"type": "notch_updated"})
-        return {"success": True, "message": f"Đã phục hồi {count} notch"}
+        return {
+            "success": True,
+            "restored_count": count,
+            "message": f"Đã phục hồi {count} notch",
+            "message_code": "panic_undone",
+            "params": {"count": count},
+        }
 
     @app.get("/api/v1/meters")
     async def get_meters() -> Dict[str, Any]:
@@ -553,9 +649,20 @@ def create_app(
         if not mgr:
             raise HTTPException(status_code=500, detail="Snapshot manager chưa khả dụng")
 
-        snap = mgr.take_snapshot()
+        snap = mgr.take_snapshot(
+            channel_bands_count=engine.config.eq.channel_bands_count,
+            bus_bands_count=engine.config.eq.bus_bands_count,
+            main_bands_count=engine.config.eq.main_bands_count,
+        )
         record_event("snapshot_taken", {"bands_count": len(snap.bands)})
-        return {"success": True, "bands_count": len(snap.bands), "timestamp": snap.timestamp}
+        return {
+            "success": True,
+            "bands_count": len(snap.bands),
+            "timestamp": snap.timestamp,
+            "message": f"Đã chụp snapshot PEQ ({len(snap.bands)} bands)",
+            "message_code": "snapshot_taken",
+            "params": {"count": len(snap.bands)},
+        }
 
     @app.post("/api/v1/snapshot/rollback")
     async def rollback_snapshot(request: Request) -> Dict[str, Any]:
@@ -574,6 +681,11 @@ def create_app(
             "failed_count": len(report.failed_addresses),
             "partial_failure": report.partial_failure,
             "message": report.status_message,
+            "message_code": "snapshot_rollback",
+            "params": {
+                "restored_count": report.restored_count,
+                "failed_count": len(report.failed_addresses),
+            },
         }
 
     @app.get("/api/v1/pair/pin")
@@ -648,6 +760,8 @@ def create_app(
                             "type": "panic_event",
                             "released_count": len(rollback_props),
                             "timestamp": now,
+                            "message_code": "panic_triggered",
+                            "params": {"count": len(rollback_props)},
                         })
 
                     elif action == "approve_proposal":

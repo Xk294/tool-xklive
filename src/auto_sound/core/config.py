@@ -31,6 +31,12 @@ class ChannelsConfig:
 
 @dataclass
 class EQConfig:
+    channel_bands_count: int = 4
+    channel_band_names: List[str] = field(default_factory=lambda: ["Low", "LoMid", "HiMid", "High"])
+    bus_bands_count: int = 6
+    bus_band_names: List[str] = field(default_factory=lambda: ["Low", "Lo2", "LoMid", "HiMid", "High2", "High"])
+    main_bands_count: int = 6
+    main_band_names: List[str] = field(default_factory=lambda: ["Low", "Lo2", "LoMid", "HiMid", "High2", "High"])
     auto_notch_bands: List[int] = field(default_factory=lambda: [3, 4])
     bus_auto_notch_bands: List[int] = field(default_factory=lambda: [5, 6])
     main_auto_notch_bands: List[int] = field(default_factory=lambda: [3, 4, 5, 6])

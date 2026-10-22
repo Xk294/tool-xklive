@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import type { LogEntry } from '~/composables/useCompanionSocket'
+import { useI18n } from '~/composables/useI18n'
+
+const { t } = useI18n()
 
 defineProps<{
   logs: LogEntry[]
@@ -13,8 +16,8 @@ const emit = defineEmits<{
 <template>
   <div class="c-card">
     <div class="c-card-title">
-      <span>Nhật Ký Sự Kiện Hệ Thống</span>
-      <button class="c-btn-small" @click="emit('clear')">Xóa Log</button>
+      <span>{{ t('log.title') }}</span>
+      <button class="c-btn-small" @click="emit('clear')">{{ t('common.clearLog') }}</button>
     </div>
     <div class="log-box">
       <div
@@ -23,10 +26,10 @@ const emit = defineEmits<{
         :class="['log-entry', log.type]"
       >
         <span class="time">{{ log.time }}</span>
-        <span>{{ log.text }}</span>
+        <span>{{ log.text_code ? t(log.text_code, log.params) : log.text }}</span>
       </div>
       <div v-if="logs.length === 0" class="log-empty">
-        Chưa có sự kiện nào
+        {{ t('log.empty') }}
       </div>
     </div>
   </div>

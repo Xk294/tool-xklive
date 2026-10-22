@@ -1,12 +1,36 @@
+# Python & Virtual Environments
 .venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+/build/
+
+# Testing & Cache
 .pytest_cache/
 .hypothesis/
-__pycache__/
-*.pyc
-*.egg-info/
-/dist/
-/build/
+
+# Audio Data & Recordings
+*.wav
+*.pcm
+recordings/
+logs/
+*.log
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# OS & IDEs
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Frontend (Nuxt 4 / Node)
 node_modules/
 .nuxt/
 .output/
@@ -14,3 +38,7 @@ frontend/node_modules/
 frontend/.nuxt/
 frontend/.output/
 frontend/dist
+frontend/dist/
+
+# Retain Compiled Static Frontend Build
+!src/auto_sound/web/dist/**

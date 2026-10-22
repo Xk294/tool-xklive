@@ -23,6 +23,74 @@ class ExpectedEcho:
     expiry: float
 
 
+def discover_mixers(
+    timeout_s: float = 0.6,
+    port: int = 10024,
+    targets: Optional[List[str]] = None,
+) -> List[Dict[str, str]]:
+    """Quét mạng LAN bằng OSC UDP Broadcast để tìm kiếm các mixer Behringer/Midas X-Air.
+    
+    Gửi gói tin /xinfo tới địa chỉ Broadcast và các địa chỉ IP mạng cục bộ phổ biến,
+    sau đó phân tích các gói tin phản hồi để xác định IP, Model, Tên và Firmware.
+    """
+    discovered: List[Dict[str, str]] = []
+    seen_ips: Set[str] = set()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    except Exception:
+        pass
+    sock.settimeout(0.08)
+
+    default_targets = [
+        "255.255.255.255",
+        "192.168.1.255",
+        "192.168.0.255",
+        "192.168.1.100",
+        "192.168.1.1",
+        "127.0.0.1",
+    ]
+    query_targets = targets or default_targets
+    msg = encode_message("/xinfo")
+
+    for tgt in query_targets:
+        try:
+            sock.sendto(msg, (tgt, port))
+        except Exception:
+            pass
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            data, (from_ip, _) = sock.recvfrom(2048)
+            addr, args = decode_message(data)
+            if addr == "/xinfo":
+                m_ip = str(args[0]) if len(args) > 0 else from_ip
+                if m_ip not in seen_ips:
+                    seen_ips.add(m_ip)
+                    model = str(args[1]) if len(args) > 1 else "X-Air"
+                    name = str(args[2]) if len(args) > 2 else "Mixer"
+                    firmware = str(args[3]) if len(args) > 3 else "Unknown"
+                    discovered.append({
+                        "ip": m_ip,
+                        "model": model,
+                        "name": name,
+                        "firmware": firmware,
+                    })
+        except (socket.timeout, BlockingIOError):
+            time.sleep(0.01)
+        except Exception:
+            break
+
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+    return discovered
+
+
 class XAirClient(MixerDriver):
     """Client giao tiếp mạng với Behringer XR18 có cơ chế Verified Write và State Machine tự hồi phục."""
 
@@ -68,6 +136,31 @@ class XAirClient(MixerDriver):
         self._meter_levels: List[float] = [0.0] * 18
         self._rta_levels: List[float] = [-100.0] * 100
         self._rta_subscribed: bool = False
+        self._meters_subscribed: bool = False
+        self.meters_renew_interval_s: float = 7.0
+        self._last_meters_renew_time: float = 0.0
+        self._last_rta_renew_time: float = 0.0
+
+        # RTT và thống kê giao tiếp OSC
+        self.last_rtt_ms: Optional[float] = None
+        self._last_ping_tx_time: Optional[float] = None
+        self.osc_tx_count: int = 0
+        self.osc_rx_count: int = 0
+        self.last_error: Optional[str] = None
+
+        # Thông tin định danh thực tế từ mixer
+        self.mixer_ip: Optional[str] = None
+        self.mixer_model: Optional[str] = None
+        self.mixer_name: Optional[str] = None
+        self.mixer_firmware: Optional[str] = None
+        self.firmware_reason: Optional[str] = None
+
+        # Trạng thái kênh đồng bộ trực tiếp từ X Air
+        self._channel_names: Dict[int, str] = {}
+        self._channel_colors: Dict[int, int] = {}
+        self._channel_mutes: Dict[int, bool] = {}
+        self._channel_eq_on: Dict[int, bool] = {}
+        self._main_eq_on: bool = True
 
     def get_state(self) -> ConnectionState:
         with self._lock:
@@ -97,6 +190,7 @@ class XAirClient(MixerDriver):
             self._set_state(ConnectionState.CONNECTED)
             # Gửi ngay heartbeat đầu tiên
             self._send_raw(encode_message("/xremote"))
+            self.sync_mixer_state()
             return True
         else:
             self._set_state(ConnectionState.RECONNECTING)
@@ -125,8 +219,10 @@ class XAirClient(MixerDriver):
             return False
         try:
             sock.sendto(data, (self.ip, self.port))
+            self.osc_tx_count += 1
             return True
-        except Exception:
+        except Exception as e:
+            self.last_error = f"Lỗi gửi OSC UDP: {e}"
             return False
 
     def _send_and_wait_xinfo(self, timeout: float) -> bool:
@@ -134,6 +230,7 @@ class XAirClient(MixerDriver):
         evt = threading.Event()
         with self._lock:
             self._pending_queries["/xinfo"] = evt
+            self._last_ping_tx_time = time.time()
 
         self._send_raw(encode_message("/xinfo"))
         success = evt.wait(timeout=timeout)
@@ -171,43 +268,126 @@ class XAirClient(MixerDriver):
 
             curr_state = self.get_state()
 
-            # Quản lý Heartbeat khi CONNECTED
+            # Quản lý Heartbeat và Gia hạn RTA/Meters khi CONNECTED
             if curr_state == ConnectionState.CONNECTED:
+                # 1. Heartbeat định kỳ
                 if now - last_heartbeat >= self.heartbeat_interval_s:
                     self._send_raw(encode_message("/xremote"))
-                    if self._rta_subscribed:
-                        self._send_raw(encode_message("/meters", "/meters/4"))
                     last_heartbeat = now
+
+                # 2. Renew RTA luồng /meters/4 (mỗi 7 giây)
+                if self._rta_subscribed and (now - self._last_rta_renew_time >= self.meters_renew_interval_s):
+                    self._send_raw(encode_message("/meters", "/meters/4"))
+                    self._last_rta_renew_time = now
+
+                # 3. Renew Meters luồng /meters/1 (mỗi 7 giây)
+                if self._meters_subscribed and (now - self._last_meters_renew_time >= self.meters_renew_interval_s):
+                    self._send_raw(encode_message("/meters", "/meters/1"))
+                    self._last_meters_renew_time = now
+
+                # 4. Tự động đo ping RTT định kỳ mỗi 5.0s
+                if self._last_ping_tx_time is None and (now - (self._last_rx_time or 0.0) < 15.0):
+                    if not hasattr(self, "_last_auto_ping") or (now - self._last_auto_ping >= 5.0):
+                        self._last_auto_ping = now
+                        self._last_ping_tx_time = now
+                        self._send_raw(encode_message("/xinfo"))
 
                 # Nếu quá 15 giây không có bất kỳ phản hồi nào từ mixer -> Mất kết nối
                 if self._last_rx_time > 0 and (now - self._last_rx_time > 15.0):
                     self._set_state(ConnectionState.RECONNECTING)
+                    self.last_rtt_ms = None
 
             # Quản lý tự kết nối lại trong <= 3s khi RECONNECTING
             elif curr_state == ConnectionState.RECONNECTING:
                 if now - last_heartbeat >= self.reconnect_interval_s:
+                    self._last_ping_tx_time = now
                     self._send_raw(encode_message("/xinfo"))
                     last_heartbeat = now
 
     def _handle_incoming_packet(self, data: bytes) -> None:
         """Giải mã gói tin nhận được và cập nhật cache/sự kiện."""
+        self.osc_rx_count += 1
         try:
             address, args = decode_message(data)
-        except OscParseError:
+        except OscParseError as e:
+            self.last_error = f"Lỗi giải mã OSC: {e}"
             return
 
         if address == "/xinfo":
+            if self._last_ping_tx_time is not None:
+                self.last_rtt_ms = round((time.time() - self._last_ping_tx_time) * 1000.0, 1)
+                self._last_ping_tx_time = None
+
+            if len(args) >= 4:
+                a0, a1, a2, a3 = str(args[0]), str(args[1]), str(args[2]), str(args[3])
+                self.mixer_ip = a0
+                # Phân tích thông minh Model vs Name
+                if any(prefix in a1.upper() for prefix in ("XR", "MR", "X18", "X32", "M32")):
+                    self.mixer_model = a1
+                    self.mixer_name = a2
+                elif any(prefix in a2.upper() for prefix in ("XR", "MR", "X18", "X32", "M32")):
+                    self.mixer_name = a1
+                    self.mixer_model = a2
+                else:
+                    self.mixer_model = a1
+                    self.mixer_name = a2
+                self.mixer_firmware = a3
+                self.firmware_reason = None
+            elif len(args) >= 1:
+                self.mixer_ip = str(args[0])
+                self.firmware_reason = "Mixer phản hồi ít hơn 4 tham số trong /xinfo"
+            else:
+                self.firmware_reason = "Gói /xinfo không chứa tham số"
+
             if self.get_state() == ConnectionState.RECONNECTING:
                 self._set_state(ConnectionState.CONNECTED)
                 self._send_raw(encode_message("/xremote"))
                 if self._rta_subscribed:
+                    self._last_rta_renew_time = time.time()
                     self._send_raw(encode_message("/meters", "/meters/4"))
+                if self._meters_subscribed:
+                    self._last_meters_renew_time = time.time()
+                    self._send_raw(encode_message("/meters", "/meters/1"))
+                self.sync_mixer_state()
 
             with self._lock:
                 evt = self._pending_queries.get("/xinfo")
                 if evt:
                     evt.set()
             return
+
+        # Cập nhật metadata cấu hình kênh từ X Air
+        if address.startswith("/ch/") and address.endswith("/config/name") and len(args) > 0:
+            try:
+                ch = int(address.split("/")[2])
+                with self._lock:
+                    self._channel_names[ch] = str(args[0])
+            except Exception:
+                pass
+        elif address.startswith("/ch/") and address.endswith("/config/color") and len(args) > 0:
+            try:
+                ch = int(address.split("/")[2])
+                with self._lock:
+                    self._channel_colors[ch] = int(args[0])
+            except Exception:
+                pass
+        elif address.startswith("/ch/") and address.endswith("/mix/on") and len(args) > 0:
+            try:
+                ch = int(address.split("/")[2])
+                with self._lock:
+                    self._channel_mutes[ch] = (int(args[0]) == 0)
+            except Exception:
+                pass
+        elif address.startswith("/ch/") and address.endswith("/eq/on") and len(args) > 0:
+            try:
+                ch = int(address.split("/")[2])
+                with self._lock:
+                    self._channel_eq_on[ch] = bool(int(args[0]))
+            except Exception:
+                pass
+        elif address == "/main/st/eq/on" and len(args) > 0:
+            with self._lock:
+                self._main_eq_on = bool(int(args[0]))
 
         # Giải mã RTA 100-band (/meters/4)
         if address == "/meters/4" and len(args) > 0:
@@ -352,19 +532,32 @@ class XAirClient(MixerDriver):
         is_on: bool = True,
         target: str = "ch",
     ) -> bool:
-        """Ghi toàn bộ tham số PEQ và xác minh từng bước (hỗ trợ kênh, main stereo và bus)."""
+        """Ghi toàn bộ tham số PEQ và xác minh từng bước (hỗ trợ kênh, main stereo và bus).
+        
+        Đồng thời đảm bảo Master EQ của kênh được bật và Band Type được đặt chuẩn PEQ (type 2),
+        tránh tình trạng notch filter bị vô hiệu hoặc bị cấu hình sai thành High Cut/Shelf.
+        """
         if band <= 0:
             return False
 
         if target == "main" or channel == 0:
             prefix = f"/main/st/eq/{band}"
+            master_eq_addr = "/main/st/eq/on"
         elif target == "bus" or channel > 16:
             bus_idx = channel if target == "bus" else (channel - 16)
             prefix = f"/bus/{bus_idx}/eq/{band}"
+            master_eq_addr = f"/bus/{bus_idx}/eq/on"
         else:
             if channel <= 0:
                 return False
             prefix = f"/ch/{channel:02d}/eq/{band}"
+            master_eq_addr = f"/ch/{channel:02d}/eq/on"
+
+        # Đảm bảo Master EQ của kênh được bật trên mixer
+        self._write_and_verify(master_eq_addr, 1, is_int=True)
+
+        # Đảm bảo band được chọn ở đúng chế độ Parametric EQ (type 2 trên X Air)
+        self._write_and_verify(f"{prefix}/type", 2, is_int=True)
 
         # Bắt giá trị vật lý vào nấc rời rạc
         f_snap = self.mapper.freq.snap(freq_hz)
@@ -399,6 +592,7 @@ class XAirClient(MixerDriver):
         g_norm = self._query_param_sync(f"{prefix}/g")
         q_norm = self._query_param_sync(f"{prefix}/q")
         on_val = self._query_param_sync(f"{prefix}/on")
+        type_val = self._query_param_sync(f"{prefix}/type")
 
         if f_norm is None or g_norm is None or q_norm is None:
             return None
@@ -410,10 +604,101 @@ class XAirClient(MixerDriver):
             gain_db=self.mapper.gain.from_float(float(g_norm)),
             q=self.mapper.q.from_float(float(q_norm)),
             is_on=bool(on_val if on_val is not None else 1),
+            filter_type=int(type_val) if type_val is not None else 2,
         )
 
+    def sync_mixer_state(self, num_channels: int = 16) -> None:
+        """Truy vấn metadata tên kênh, màu sắc, mute và EQ master từ mixer."""
+        for ch in range(1, num_channels + 1):
+            ch_str = f"{ch:02d}"
+            self._send_raw(encode_message(f"/ch/{ch_str}/config/name"))
+            self._send_raw(encode_message(f"/ch/{ch_str}/config/color"))
+            self._send_raw(encode_message(f"/ch/{ch_str}/mix/on"))
+            self._send_raw(encode_message(f"/ch/{ch_str}/eq/on"))
+        self._send_raw(encode_message("/main/st/eq/on"))
+
+    def get_device_info(self) -> Dict[str, Any]:
+        """Lấy thông tin nhận diện mixer phần cứng và trạng thái truyền thông OSC."""
+        with self._lock:
+            return {
+                "ip": self.mixer_ip or self.ip,
+                "port": self.port,
+                "model": self.mixer_model or "Behringer XR",
+                "name": self.mixer_name or "X-Air Mixer",
+                "firmware": self.mixer_firmware or "Unknown",
+                "firmware_reason": self.firmware_reason,
+                "state": self._state.value,
+                "last_rtt_ms": self.last_rtt_ms,
+                "osc_tx_count": self.osc_tx_count,
+                "osc_rx_count": self.osc_rx_count,
+                "last_error": self.last_error,
+                "rta_subscribed": self._rta_subscribed,
+                "meters_subscribed": self._meters_subscribed,
+            }
+
+    def ping(self, timeout_s: float = 0.5) -> Optional[float]:
+        """Đo RTT thật với mixer bằng cách gửi /xinfo và chờ phản hồi."""
+        t0 = time.time()
+        evt = threading.Event()
+        with self._lock:
+            self._pending_queries["/xinfo"] = evt
+            self._last_ping_tx_time = t0
+        self._send_raw(encode_message("/xinfo"))
+        success = evt.wait(timeout=timeout_s)
+        with self._lock:
+            self._pending_queries.pop("/xinfo", None)
+        if success:
+            rtt = round((time.time() - t0) * 1000.0, 1)
+            self.last_rtt_ms = rtt
+            return rtt
+        self.last_rtt_ms = None
+        return None
+
+    def probe_channel_bands(self, channel: int = 1, max_bands: int = 6, timeout_s: float = 0.25) -> int:
+        """Tự kiểm tra số band PEQ tồn tại trên kênh bằng cách truy vấn /ch/NN/eq/N/f."""
+        ch_str = f"{channel:02d}"
+        detected = 0
+        for b in range(1, max_bands + 1):
+            addr = f"/ch/{ch_str}/eq/{b}/f"
+            val = self._params_cache.get(addr)
+            if val is not None:
+                detected = max(detected, b)
+            else:
+                res = self._query_param_sync(addr, timeout=timeout_s)
+                if res is not None:
+                    detected = max(detected, b)
+        return max(4, detected)
+
+    def get_channel_info(self, channel: int) -> Dict[str, Any]:
+        """Lấy metadata cấu hình của kênh (Tên, Màu, Mute, EQ)."""
+        with self._lock:
+            name = self._channel_names.get(channel, f"CH {channel:02d}")
+            color = self._channel_colors.get(channel, 0)
+            is_muted = self._channel_mutes.get(channel, False)
+            eq_on = self._channel_eq_on.get(channel, True)
+            return {
+                "channel": channel,
+                "name": name,
+                "color": color,
+                "is_muted": is_muted,
+                "eq_on": eq_on,
+            }
+
+    def is_channel_muted(self, channel: int) -> bool:
+        """Kiểm tra kênh có đang bị MUTE trên mixer không."""
+        with self._lock:
+            return self._channel_mutes.get(channel, False)
+
+    def get_channel_name(self, channel: int) -> str:
+        """Lấy tên hiển thị của kênh trên bàn mixer (ưu tiên tên thật từ mixer, fallback CH NN)."""
+        with self._lock:
+            return self._channel_names.get(channel, f"CH {channel:02d}")
+
     def subscribe_meters(self, enable: bool = True) -> None:
+        """Đăng ký hoặc hủy nhận luồng meter 16 kênh (/meters/1)."""
+        self._meters_subscribed = enable
         if enable:
+            self._last_meters_renew_time = time.time()
             self._send_raw(encode_message("/meters", "/meters/1"))
 
     def get_meter_levels(self) -> List[float]:
@@ -424,6 +709,7 @@ class XAirClient(MixerDriver):
         """Đăng ký hoặc hủy luồng nhận phổ RTA 100-band (/meters/4)."""
         self._rta_subscribed = enable
         if enable:
+            self._last_rta_renew_time = time.time()
             self._send_raw(encode_message("/meters", "/meters/4"))
 
     def get_rta_levels(self) -> List[float]:

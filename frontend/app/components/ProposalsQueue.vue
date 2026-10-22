@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import type { Proposal } from '~/composables/useCompanionSocket'
+import { useI18n } from '~/composables/useI18n'
+
+const { t } = useI18n()
 
 defineProps<{
   proposals: Proposal[]
@@ -10,19 +13,36 @@ const emit = defineEmits<{
   (e: 'reject', id: string): void
   (e: 'snooze', id: string): void
 }>()
+
+function formatTarget(p: Proposal): string {
+  if (p.target === 'main' || p.channel === 0) {
+    return 'Main LR'
+  }
+  if (p.target === 'bus') {
+    return t('proposals.bus', { n: p.bus ?? '' })
+  }
+  if (!p.channel_name) {
+    return t('proposals.channel', { n: p.channel })
+  }
+  const match = p.channel_name.match(/^(?:K\u00eanh|Ch)\s*0?(\d+)$/i)
+  if (match) {
+    return t('proposals.channel', { n: match[1] })
+  }
+  return p.channel_name
+}
 </script>
 
 <template>
   <div class="c-card">
     <div class="c-card-title">
-      <span>Hàng Đợi Đề Xuất Cắt Hú (SEMI)</span>
+      <span>{{ t('proposals.title') }}</span>
       <span :class="['badge', proposals.length > 0 ? 'reconnecting' : 'connected']">
-        {{ proposals.length }} Chờ
+        {{ t('proposals.waiting', { n: proposals.length }) }}
       </span>
     </div>
 
     <div v-if="proposals.length === 0" class="empty-state">
-      Không có tần số nghi vấn nào cần duyệt
+      {{ t('proposals.empty') }}
     </div>
 
     <div v-else class="proposals-list">
@@ -37,13 +57,13 @@ const emit = defineEmits<{
         </div>
 
         <div class="prop-meta">
-          Đích: <b>{{ p.target === 'bus' ? `Bus ${p.bus}` : `Kênh ${p.channel}` }}</b> | Tin cậy: <b>{{ (p.confidence_score * 100).toFixed(0) }}%</b>
+          {{ t('proposals.target') }}: <b>{{ formatTarget(p) }}</b> | {{ t('proposals.confidence') }}: <b>{{ (p.confidence_score * 100).toFixed(0) }}%</b>
         </div>
 
         <div class="prop-actions">
-          <button class="btn-approve" @click="emit('approve', p.id)">DUYỆT (Space)</button>
-          <button class="btn-reject" @click="emit('reject', p.id)">Từ chối</button>
-          <button class="btn-snooze" @click="emit('snooze', p.id)">Bỏ qua 60s</button>
+          <button class="btn-approve" @click="emit('approve', p.id)">{{ t('common.approve') }}</button>
+          <button class="btn-reject" @click="emit('reject', p.id)">{{ t('common.reject') }}</button>
+          <button class="btn-snooze" @click="emit('snooze', p.id)">{{ t('common.snooze') }}</button>
         </div>
       </div>
     </div>

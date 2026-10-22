@@ -1,7 +1,9 @@
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useI18n } from '~/composables/useI18n'
 
 export interface ActiveNotch {
   channel: number
+  channel_name?: string
   bus: number | null
   band: number
   freq_hz: number
@@ -11,11 +13,14 @@ export interface ActiveNotch {
   age_s: number
   is_locked: boolean
   step_count: number
+  status_code?: string
+  status_params?: Record<string, string | number>
 }
 
 export interface Proposal {
   id: string
   channel: number
+  channel_name?: string
   bus: number | null
   target: string
   freq_hz: number
@@ -25,16 +30,32 @@ export interface Proposal {
   created_at: number
   ttl_remaining_s: number
   reason: string
+  reason_code?: string
+  reason_params?: Record<string, string | number>
+}
+
+export interface ChannelInfo {
+  channel: number
+  name: string
+  color: number
+  is_muted: boolean
+  level: number
+  is_locked: boolean
+  whitelisted: boolean
 }
 
 export interface LogEntry {
   id: number
   time: string
-  text: string
+  text?: string
+  text_code?: string
+  params?: Record<string, string | number>
   type: 'normal' | 'panic' | 'approved' | 'warning'
 }
 
 export function useCompanionSocket() {
+  const { t } = useI18n()
+
   const mixerStatus = ref<'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('DISCONNECTED')
   const mixerModel = ref('XR18 v1.18')
   const latencyMs = ref(64.0)
@@ -44,6 +65,7 @@ export function useCompanionSocket() {
 
   const activeNotches = ref<ActiveNotch[]>([])
   const pendingProposals = ref<Proposal[]>([])
+  const channels = ref<ChannelInfo[]>([])
   const meters = ref<number[]>(new Array(16).fill(0))
   const rtaBins = ref<number[]>(new Array(100).fill(-60))
   const peakHoldBins = ref<number[]>(new Array(100).fill(-60))
@@ -53,13 +75,20 @@ export function useCompanionSocket() {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let logIdCounter = 1
 
-  function addLog(text: string, type: 'normal' | 'panic' | 'approved' | 'warning' = 'normal') {
+  function addLog(
+    text: string,
+    type: 'normal' | 'panic' | 'approved' | 'warning' = 'normal',
+    text_code?: string,
+    params?: Record<string, string | number>
+  ) {
     const d = new Date()
     const timeStr = d.toTimeString().split(' ')[0]
     eventLogs.value.unshift({
       id: logIdCounter++,
       time: timeStr,
       text,
+      text_code,
+      params,
       type
     })
     if (eventLogs.value.length > 200) {
@@ -75,7 +104,6 @@ export function useCompanionSocket() {
     if (import.meta.server) return
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    // Nếu chạy nuxt dev trên port 3000, kết nối tới backend port 8000
     const host = window.location.port === '3000' ? `${window.location.hostname}:8000` : window.location.host
     const wsUrl = `${proto}//${host}/ws`
 
@@ -83,7 +111,7 @@ export function useCompanionSocket() {
 
     ws.onopen = () => {
       mixerStatus.value = 'CONNECTED'
-      addLog('Đã kết nối luồng dữ liệu thời gian thực (WebSocket)', 'approved')
+      addLog(t('log.connected'), 'approved', 'log.connected')
     }
 
     ws.onmessage = (evt) => {
@@ -97,7 +125,7 @@ export function useCompanionSocket() {
 
     ws.onclose = () => {
       mixerStatus.value = 'RECONNECTING'
-      addLog('Mất kết nối WebSocket. Đang tự động kết nối lại...', 'warning')
+      addLog(t('log.disconnected'), 'warning', 'log.disconnected')
       reconnectTimer = setTimeout(connect, 1500)
     }
 
@@ -110,8 +138,8 @@ export function useCompanionSocket() {
     if (msg.type === 'state_snapshot') {
       currentMode.value = msg.status.mode
       mixerStatus.value = msg.status.mixer_state
-      mixerModel.value = `${msg.status.model} v${msg.status.firmware}`
-      latencyMs.value = msg.status.latency_ms
+      mixerModel.value = msg.status.firmware ? `${msg.status.model} v${msg.status.firmware}` : msg.status.model
+      latencyMs.value = msg.status.latency_ms ?? msg.status.dsp_latency_ms ?? msg.status.rtt_ms ?? 0
       xruns.value = msg.status.xruns
       isLanRta.value = msg.status.lan_rta_mode
       activeNotches.value = msg.notches || []
@@ -127,12 +155,14 @@ export function useCompanionSocket() {
         }
       }
     } else if (msg.type === 'panic_event') {
-      addLog(`🚨 PANIC ĐÃ KÍCH HOẠT: Hoàn tác ${msg.released_count} notch về 0 dB`, 'panic')
+      const count = msg.released_count ?? 0
+      addLog(t('log.panicTriggered', { count }), 'panic', 'log.panicTriggered', { count })
       refreshNotches()
     } else if (['proposal_resolved', 'notch_updated', 'mode_updated'].includes(msg.type)) {
       refreshStatus()
       refreshNotches()
       refreshProposals()
+      refreshChannels()
     }
   }
 
@@ -143,7 +173,7 @@ export function useCompanionSocket() {
 
   async function setMode(mode: 'auto' | 'semi' | 'manual') {
     if (mode === 'auto') {
-      const ok = confirm('CẢNH BÁO SÂN KHẤU: Bạn có chắc chắn muốn chuyển sang chế độ AUTO (Hệ thống tự động hạ notch ngay khi phát hiện hú mà không cần soundman duyệt)?')
+      const ok = confirm(t('modes.confirmAuto'))
       if (!ok) return
     }
     try {
@@ -153,12 +183,14 @@ export function useCompanionSocket() {
         body: JSON.stringify({ mode, confirm: true })
       })
       const data = await res.json()
-      if (data.success) {
-        currentMode.value = mode
-        addLog(`Đã chuyển sang chế độ: ${mode.toUpperCase()}`, 'approved')
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || 'Failed to change mode')
       }
+      currentMode.value = mode
+      const modeLabel = mode.toUpperCase()
+      addLog(t('log.modeChanged', { mode: modeLabel }), 'approved', 'log.modeChanged', { mode: modeLabel })
     } catch (e: any) {
-      alert(`Lỗi đổi chế độ: ${e.message}`)
+      alert(t('errors.modeChange', { msg: e.message }))
     }
   }
 
@@ -166,10 +198,14 @@ export function useCompanionSocket() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/panic`, { method: 'POST' })
       const data = await res.json()
-      addLog(data.message, 'panic')
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || 'PANIC failed')
+      }
+      const count = data.released_count ?? 0
+      addLog(t('log.panicTriggered', { count }), 'panic', 'log.panicTriggered', { count })
       refreshNotches()
     } catch (e: any) {
-      alert(`Lỗi thực thi PANIC: ${e.message}`)
+      alert(t('errors.panic', { msg: e.message }))
     }
   }
 
@@ -177,10 +213,14 @@ export function useCompanionSocket() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/panic/undo`, { method: 'POST' })
       const data = await res.json()
-      addLog(data.message, 'approved')
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || 'Undo PANIC failed')
+      }
+      const count = data.restored_count ?? 0
+      addLog(t('reasons.undo_panic'), 'approved', 'reasons.undo_panic', { count })
       refreshNotches()
     } catch (e: any) {
-      alert(`Lỗi hoàn tác PANIC: ${e.message}`)
+      alert(t('errors.undoPanic', { msg: e.message }))
     }
   }
 
@@ -226,7 +266,7 @@ export function useCompanionSocket() {
   }
 
   async function releaseAllNotches() {
-    if (confirm('Nhả toàn bộ notch đang hoạt động về 0.0 dB?')) {
+    if (confirm(t('panic.confirmReleaseAll'))) {
       await triggerPanic()
     }
   }
@@ -235,20 +275,29 @@ export function useCompanionSocket() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/snapshot/take`, { method: 'POST' })
       const data = await res.json()
-      addLog(`📸 Đã chụp snapshot PEQ (${data.bands_count} bands)`, 'approved')
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || 'Take snapshot failed')
+      }
+      const count = data.bands_count ?? 0
+      addLog(t('log.snapshotTaken', { count }), 'approved', 'log.snapshotTaken', { count })
     } catch (e: any) {
-      alert(`Lỗi chụp snapshot: ${e.message}`)
+      alert(t('errors.snapshot', { msg: e.message }))
     }
   }
 
   async function rollbackSnapshot() {
-    if (!confirm('Khôi phục toàn bộ PEQ về bản chụp snapshot ban đầu?')) return
+    if (!confirm(t('snapshot.confirmRollback'))) return
     try {
       const res = await fetch(`${getApiBase()}/api/v1/snapshot/rollback`, { method: 'POST' })
       const data = await res.json()
-      addLog(data.message, data.partial_failure ? 'warning' : 'approved')
+      if (!res.ok || !data.success) {
+        throw new Error(data.detail || 'Rollback snapshot failed')
+      }
+      const msgCode = data.message_code ? `messages.${data.message_code}` : ''
+      const msgText = msgCode ? t(msgCode, data.params) : data.message
+      addLog(msgText, data.partial_failure ? 'warning' : 'approved', msgCode, data.params)
     } catch (e: any) {
-      alert(`Lỗi hoàn tác snapshot: ${e.message}`)
+      alert(t('errors.rollback', { msg: e.message }))
     }
   }
 
@@ -282,8 +331,19 @@ export function useCompanionSocket() {
     }
   }
 
+  async function refreshChannels() {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/channels`)
+      const data = await res.json()
+      channels.value = data.channels || []
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
   onMounted(() => {
     connect()
+    refreshChannels()
   })
 
   onUnmounted(() => {
@@ -298,6 +358,7 @@ export function useCompanionSocket() {
     xruns,
     isLanRta,
     currentMode,
+    channels,
     activeNotches,
     pendingProposals,
     meters,
