@@ -1,5 +1,5 @@
-# Hồ sơ thiết bị Behringer X-Air XR12
-# Hỗ trợ tự động chống hú qua mạng LAN dựa trên RTA 100-band và can thiệp PEQ Main L/R
+# Device profile for Behringer X-Air XR12
+# Supports LAN RTA 100-band feedback detection and Main L/R + Aux Bus PEQ cuts
 
 [device]
 name = "Behringer XR12"
@@ -13,26 +13,25 @@ has_multichannel_usb = false
 supports_rta_network = true
 
 [channels]
-# 4 kênh đầu vào mic preamps Midas-designed (cổng Combo XLR/TRS)
+# 4 Midas-designed combo XLR/TRS mic preamp input channels
 mic_channels = [1, 2, 3, 4]
-# 8 kênh line level TRS (kênh 5-12)
+# 8 TRS line-level input channels (5-12)
 line_channels = [5, 6, 7, 8, 9, 10, 11, 12]
 total_channels = 12
 
 [buses]
-# XR12 có 2 cổng Aux Out vật lý
+# XR12 has 2 physical Aux output buses
 aux_buses = [1, 2]
 
 [eq]
-# Main Stereo L/R có 6 band PEQ.
-# Giữ Band 1 & 2 cho Soundman tinh chỉnh âm sắc FOH, dùng Band 3, 4, 5, 6 làm Auto Notch
+# Main Stereo L/R has 6 PEQ bands; bands 1-2 reserved for FOH voicing, bands 3-6 for auto notch
 main_auto_notch_bands = [3, 4, 5, 6]
 auto_notch_bands = [3, 4]
 bus_auto_notch_bands = [5, 6]
 max_notches_per_channel = 2
 max_notches_per_target = 4
 
-# Thông số ánh xạ tham số EQ
+# EQ parameter mapping specification
 freq_min_hz = 20.0
 freq_max_hz = 20000.0
 freq_steps = 201

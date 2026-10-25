@@ -1,19 +1,19 @@
-# Hồ sơ thiết bị Behringer X-Air XR18 / Midas MR18
-# Mọi thông số chưa thể kiểm chứng trên bàn vật lý được đánh dấu [CẦN ĐO THẬT]
+# Device profile for Behringer X-Air XR18 / Midas MR18
+# Parameters marked [NEEDS HARDWARE VERIFICATION] require validation on a physical mixer
 
 [device]
 name = "Behringer XR18"
 family = "X-Air"
 port = 10024
-max_clients = 4  # [CẦN ĐO THẬT] Giới hạn phần cứng tối đa 4 client /xremote đồng thời
+max_clients = 4  # [NEEDS HARDWARE VERIFICATION] Max concurrent /xremote clients
 heartbeat_interval_s = 8.0
 client_timeout_s = 10.0
 reconnect_timeout_s = 3.0
 
 [channels]
-# 16 kênh đầu vào mic (hiển thị trên giao diện theo dõi)
+# 16 mic input channels monitored by DSP
 mic_channels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-# 2 kênh Aux In / USB return (không bao giờ tự động can thiệp)
+# 2 Aux In / USB return channels (excluded from automatic PEQ cuts)
 return_channels = [17, 18]
 total_usb_channels = 18
 
@@ -21,30 +21,30 @@ total_usb_channels = 18
 aux_buses = [1, 2, 3, 4, 5, 6]
 
 [eq]
-# XR18 Input Channel có 4 band PEQ.
-# CHỈ dùng các band này cho notch tự động, không động vào band 1-2 của soundman.
+# XR18 input channels have 4 PEQ bands; bands 1-2 are reserved for the sound engineer
 auto_notch_bands = [3, 4]
-bus_auto_notch_bands = [5, 6]  # [CẦN ĐO THẬT] Bus PEQ có 6 band trên XR18
+bus_auto_notch_bands = [5, 6]  # [NEEDS HARDWARE VERIFICATION] Bus PEQ has 6 bands on XR18
+main_auto_notch_bands = [3, 4, 5, 6]
 max_notches_per_channel = 2
 
-# Thông số ánh xạ tham số EQ
+# EQ parameter mapping specification
 freq_min_hz = 20.0
 freq_max_hz = 20000.0
-freq_steps = 201  # [CẦN ĐO THẬT] Bước lượng tử hóa tần số trên firmware (khoảng 67 bước/decade trên 3 decade 20Hz-20kHz)
+freq_steps = 201  # [NEEDS HARDWARE VERIFICATION] Firmware frequency quantization steps (20Hz-20kHz)
 
 gain_min_db = -15.0
 gain_max_db = 15.0
-gain_steps = 121  # [CẦN ĐO THẬT] Bước nhảy 0.25dB hoặc 0.5dB (khoảng 121 bước)
+gain_steps = 121  # [NEEDS HARDWARE VERIFICATION] 0.25 dB step resolution across -15..+15 dB
 
 q_min = 0.3
 q_max = 10.0
-q_steps = 72     # [CẦN ĐO THẬT] 72 bước logarit theo chuẩn X32/X-Air
+q_steps = 72     # [NEEDS HARDWARE VERIFICATION] 72 logarithmic Q steps
 
 [safety]
 max_boost_db = 4.0
 max_cut_db = -12.0
 probe_step_db = -3.0
-probe_wait_ms = 80   # [CẦN ĐO THẬT] 50-100ms: thời gian chờ sau khi cắt thăm dò -3dB
+probe_wait_ms = 80   # [NEEDS HARDWARE VERIFICATION] Probing cooldown after initial -3 dB cut
 max_transactions_per_sec = 2.0
 manual_override_lock_s = 10.0
 auto_release_wait_s = 20.0

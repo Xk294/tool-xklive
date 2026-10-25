@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 ## Aki Rules
-Shared rules live at `~/.aki/claudedoc/`. Read `~/.aki/claudedoc/index.md` for the full rule index and loading policy.
+Shared rules live at `~/.aki/akidevrule/`. Read `~/.aki/akidevrule/index.md` for the full rule index and loading policy.
 
 ---
 
@@ -10,7 +10,7 @@ Shared rules live at `~/.aki/claudedoc/`. Read `~/.aki/claudedoc/index.md` for t
 - Name: Auto Sound Engineer (tool xklive)
 - Description: Realtime acoustic feedback suppression system for Behringer X-Air (XR12, XR16, XR18) & Midas M-Air (MR12, MR18) via OSC UDP port 10024.
 - Core Desktop & Audio Engine: Tauri v2 (Rust 1.90+), CPAL (CoreAudio/ASIO/ALSA), RustFFT, RTRB (Zero-allocation SPSC Ring Buffer), ROSC (OSC UDP Socket 10024).
-- User Interface: Nuxt 4 / Vue 3 SPA + Vite + Tailwind CSS (compiled into frontend/dist).
+- User Interface: Nuxt 4 / Vue 3 SPA + Vite + Scoped CSS (compiled into frontend/dist).
 - Hardware Integration: XR18/MR18 via USB 18x18 + LAN; XR12/XR16/MR12 via LAN RTA 100-band (/meters/4).
 
 ### 2. Verification Command

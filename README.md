@@ -6,6 +6,8 @@ Hệ thống hỗ trợ kỹ sư âm thanh trực tiếp (Live Sound) tự độ
 
 ## 1. Nguyên Tắc Cốt Lõi
 
+Đây là thiết kế và hành vi có trong mã nguồn Rust; chưa mục nào được kiểm chứng trên mixer thật (xem mục 5).
+
 1. **Tách biệt tuyệt đối Audio Plane và Control Plane**:
    - Âm thanh của buổi biểu diễn đi trực tiếp từ micro -> mixer -> loa FOH/Monitor, hoàn toàn **KHÔNG đi qua laptop**.
    - Laptop chỉ thu bản sao tín hiệu (qua cổng USB 18x18 đối với XR18/MR18, hoặc qua gói tin phổ RTA 100-band đối với XR12/XR16/MR12) để phân tích DSP và gửi lệnh điều khiển PEQ qua mạng LAN (OSC/UDP).
@@ -13,11 +15,11 @@ Hệ thống hỗ trợ kỹ sư âm thanh trực tiếp (Live Sound) tự độ
 
 2. **Kỹ sư âm thanh (Soundman) luôn giữ quyền quyết định**:
    - Hỗ trợ 3 chế độ vận hành: Tự động (`auto`), Bán tự động (`semi` — cảnh báo đỏ, chờ Soundman bấm Space hoặc bấm Approve trên Web để hạ notch), và Gợi ý (`manual`).
-   - Có nút **PANIC** (phím tắt `[P]` trên CLI hoặc nút đỏ khẩn cấp trên Web Companion): Lập tức hoàn tác, trả toàn bộ các notch hệ thống về 0 dB chỉ trong 1 thao tác.
+   - Có nút **PANIC** (phím `P` hoặc `Esc`, hoặc nút đỏ khẩn cấp trên giao diện): Lập tức hoàn tác, trả toàn bộ các notch hệ thống về trạng thái gốc ban đầu (`original_gain_db`) chỉ trong 1 thao tác.
 
 3. **Can thiệp Mixer An toàn & Tương tác Trực tiếp (Direct Interfacing)**:
    - **Tự động quét mạng (Auto-Discovery)**: Quét UDP broadcast `/xinfo` port 10024 để tìm mixer Behringer/Midas trên LAN không cần gán cứng IP.
-   - **Đồng bộ Metadata thời gian thực**: Lấy tên kênh show (*Lead Vox, MC, Guitar...*), mã màu, trạng thái MUTE và Master EQ trực tiếp từ mixer.
+   - **Đồng bộ Metadata thời gian thực**: Lấy tên kênh, trạng thái MUTE và trạng thái EQ on của kênh trực tiếp từ mixer.
    - **Mute-Aware DSP Skip**: Tự động bỏ qua phân tích các micro đang bị MUTE trên bàn mixer để triệt tiêu hoàn toàn báo động giả.
    - **Đảm bảo hiệu lực PEQ (Direct PEQ Enforcement)**: Hàm `set_peq()` tự động bật Master EQ kênh (`/eq/on = 1`) và ép loại Band về Parametric EQ (`type = 2`), chống tình trạng notch bị vô hiệu hoặc méo dải cao từ preset cũ.
    - **Cơ chế Expected-Echo**: Phân biệt chính xác giữa phản hồi của lệnh hệ thống ghi với thao tác vặn tay thực tế của soundman trên iPad/bàn mixer.
@@ -28,238 +30,87 @@ Hệ thống hỗ trợ kỹ sư âm thanh trực tiếp (Live Sound) tự độ
    - **Two-Factor Localizer**: Giải quyết hiện tượng crosstalk khi nhiều mic cùng bắt tiếng hú dựa trên ma trận phổ và routing Bus.
    - **Auto-Release & Reclaiming**: Tự động thu hồi notch nông nhất khi cạn band PEQ và từ từ nhả gain notch về 0 dB khi âm trường ổn định.
 
-4. **100% Giấy phép nguồn mở tương thích thương mại**:
-   - Sử dụng các thư viện có giấy phép MIT, BSD, Apache-2.0, Unlicense.
-   - Tuyệt đối không chứa mã nguồn GPL/AGPL hay FFTW để đảm bảo an toàn pháp lý cho việc triển khai thương mại.
+4. **Quy ước giấy phép thư viện**:
+   - Chỉ dùng thư viện MIT, BSD, Apache-2.0, Unlicense; không GPL/AGPL, không FFTW (chi tiết tại `docs/SBOM.md`).
 
 ---
 
 ## 2. Cài Đặt Môi Trường
 
-Yêu cầu hệ thống:
-- Hệ điều hành: macOS hoặc Linux (khuyến nghị có hỗ trợ CoreAudio/ALSA)
-- Python: Phiên bản `>= 3.11`
-- Kết nối phần cứng: Cáp mạng LAN RJ45 Cat5e/Cat6 và cáp USB 2.0 Type-B nối với XR18 (hoặc cáp mạng LAN cho XR12/XR16).
-- Giao diện Web: Bản dựng tĩnh Nuxt 4 / Vue 3 đã được biên dịch sẵn trong `src/auto_sound/web/dist/`, **không bắt buộc phải cài đặt Node.js/npm** khi chạy.
+Stack duy nhất: Tauri v2 + Rust (`src-tauri/`) cho lõi, DSP và mixer; Nuxt 4 / Vue 3 (`frontend/`) cho giao diện.
 
-### Các bước cài đặt:
+Yêu cầu:
+- Rust toolchain (`rustup`), Node.js + npm, hệ điều hành hỗ trợ Tauri v2 (macOS đang là môi trường phát triển).
+- Phần cứng: cáp mạng LAN RJ45 Cat5e/Cat6, cáp USB 2.0 Type-B nối XR18/MR18 (XR12/XR16/MR12 chỉ cần LAN).
 
 ```bash
-# 1. Tạo môi trường ảo Python 3.11+
-python3.11 -m venv .venv
-source .venv/bin/activate
+# Cài dependency gốc (Tauri CLI) và giao diện
+npm install
+npm --prefix frontend install
 
-# 2. Cài đặt gói ở chế độ phát triển cùng toàn bộ dependency
-pip install -e ".[dev]"
+# Chạy ứng dụng ở chế độ phát triển (Tauri + Nuxt)
+npm run dev
 
-# 3. Kiểm tra tính hợp lệ của giấy phép bản quyền
-pip-licenses
-```
-
-*(Nếu muốn tùy biến mã nguồn giao diện Nuxt 4: vào thư mục `frontend/`, chạy `npm install` và `npm run generate` để xuất bản sang `src/auto_sound/web/dist/`).*
-
----
-
-## 3. Chạy Kiểm Thử Tự Động (Testing Suite)
-
-Toàn bộ hệ thống được kiểm thử tự động với **86 kịch bản** (85 passed, 1 skipped chờ tập dữ liệu show diễn thực tế), bao gồm Unit tests, Property-based testing (Hypothesis), kiểm tra Expected-Echo, Web Companion API, các tính năng chẩn đoán, Dry-run, Ring-out Wizard và Benchmark âm học:
-
-```bash
-# Chạy toàn bộ test suite
-.venv/bin/pytest -v
-
-# Chạy riêng bài kiểm thử Benchmark phát hiện hú và từ chối báo động giả
-.venv/bin/pytest -v -s tests/test_detector_sim.py
-
-# Chạy riêng các bài kiểm thử tính năng mới
-.venv/bin/pytest -v tests/test_new_features.py
-```
-
-### Kết quả Benchmark mô phỏng thực nghiệm (Synthetic Data):
-- **Độ nhạy phát hiện hú (Recall)**: `100.0%` (20/20 trường hợp) | Khoảng tin cậy Wilson 95%: `[83.9% - 100.0%]`.
-- **Tỷ lệ báo động giả (False Positives)**: `0/20` (0 ca báo động giả trên tín hiệu mô phỏng) | Khoảng tin cậy Wilson 95%: `[0.0% - 16.1%]`.
-- **Thời gian phát hiện trung thực**: `64.0 ms` (bao gồm cửa sổ Hann 2048 mẫu 42.6 ms và 3 frame tích lũy xác nhận, p50: 64.0 ms, p95: 64.0 ms, max: 64.0 ms).
-
----
-
-## 4. Khởi Chạy Giao Diện & Vận Hành
-
-### 🚀 Khởi động 1 chạm với Giao diện Web Companion (Khuyên dùng):
-Chạy lệnh khởi chạy trực quan:
-```bash
-python3 run_ui.py
-```
-- Trình khởi chạy sẽ tự động phát sóng UDP broadcast `/xinfo` để tìm mixer X-Air trên mạng LAN.
-- Nếu tìm thấy mixer (ví dụ `192.168.1.100`), hệ thống tự động kết nối và mở giao diện Web tại `http://localhost:8000`.
-- Nếu không tìm thấy phần cứng, hệ thống tự động chuyển sang chế độ mô phỏng `--mock` để Soundman làm quen giao diện.
-
-### Khởi chạy qua dòng lệnh chuyên sâu (CLI):
-
-#### 1. Chế độ mô phỏng (Không cần mixer thật):
-```bash
-# Mở CLI mô phỏng
-.venv/bin/auto-sound --mock --mode semi
-
-# Mở Web Companion mô phỏng kèm giao diện trình duyệt
-.venv/bin/auto-sound --mock --web --port 8000
-```
-
-#### 2. Kết nối từ xa qua iPad / Điện thoại trong mạng LAN:
-```bash
-.venv/bin/auto-sound --web --listen-lan --port 8000
-# Nhập mã PIN 4 chữ số hiển thị trên terminal để xác thực thiết bị kết nối
-```
-
-### Các phím thao tác trong CLI / Web Companion:
-- `[SPACE]` (Dấu cách) hoặc nút `Approve`: Phê duyệt lệnh hạ notch đang chờ (trong chế độ `semi`).
-- `[P]` hoặc nút `PANIC`: **GIANT PANIC BUTTON** — Lập tức hoàn tác, trả toàn bộ notch tự động về 0 dB.
-- `[Q]`: Thoát chương trình sạch sẽ, tự động ngắt kết nối an toàn.
-
----
-
-## 5. Hướng Dẫn Vận Hành Với Bàn Behringer XR18 / Midas MR18 Thật
-
-### Bước 1: Cấu hình mạng LAN IP tĩnh trực tiếp (Khuyến nghị cho Show Live)
-Nối trực tiếp cáp mạng RJ45 từ cổng Ethernet của laptop vào cổng Ethernet của XR18 (hoặc qua switch mạng có dây chất lượng tốt). Tránh dùng Wi-Fi tích hợp của XR18 trong không gian đông người do băng tần 2.4GHz rất dễ bị nhiễu.
-
-Thiết lập IP tĩnh cho card mạng LAN của Laptop:
-- **IP Laptop**: `192.168.1.50`
-- **Subnet Mask**: `255.255.255.0`
-- **Gateway**: để trống (hoặc `192.168.1.1`)
-
-Thiết lập IP tĩnh trên bàn XR18 (thông qua ứng dụng X-AIR Edit -> Setup -> Network -> LAN -> Static):
-- **IP XR18**: `192.168.1.100`
-- **Subnet Mask**: `255.255.255.0`
-- **Gateway**: `192.168.1.1`
-- **Cổng OSC UDP**: `10024` (mặc định của X-Air)
-
-### Bước 2: Kết nối USB Audio 18x18
-1. Cắm cáp USB 2.0 từ cổng USB B của XR18 vào laptop.
-2. Trên phần mềm X-Air Edit: Vào mục `In/Out` -> `USB Sends`: Đảm bảo 16 kênh đầu vào micro được định tuyến gửi tín hiệu `Direct Out` (tiền gain/pre-DSP) lên 16 kênh USB Send tương ứng.
-
-### Bước 3: Khởi chạy phần mềm Auto Sound
-Quét tìm mixer X-Air tự động trong mạng LAN:
-```bash
-.venv/bin/auto-sound --discover
-```
-
-Khởi chạy với tự động dò tìm IP mixer và bật Web Companion:
-```bash
-.venv/bin/auto-sound --ip auto --mode semi --web --port 8000
-```
-
-Hoặc chỉ định rõ file profile:
-```bash
-.venv/bin/auto-sound --profile device_profiles/xr18.toml --ip 192.168.1.100 --mode semi --web
+# Build ứng dụng desktop
+npm run build
 ```
 
 ---
 
-## 6. Hướng Dẫn Vận Hành Với Behringer XR12 / XR16 / Midas MR12 (Chế Độ RTA Mạng LAN)
+## 3. Kiểm Thử
 
-> **LƯU Ý:** XR12, XR16 và MR12 không có card USB audio 18x18 đa kênh. Hệ thống tự động sử dụng luồng phổ RTA 100-band mạng LAN (`/meters/4`) để giám sát đường tổng và can thiệp PEQ trên **Main Stereo L/R**:
-> - **Cơ chế**: Mixer gửi luồng phổ RTA 100-band về Laptop qua UDP. Thuật toán `RTADetector` quét tìm đỉnh hú trên đường tổng và hạ notch PEQ trên Main Stereo L/R (sử dụng Band 3, 4, 5, 6 — giữ Band 1 & 2 cho Soundman tinh chỉnh âm sắc FOH).
-> - **Kết nối**: Cắm cáp mạng LAN từ Laptop vào XR12/XR16 (hoặc qua router Wi-Fi riêng).
-
-### Lệnh khởi chạy:
 ```bash
-# Tự động nhận diện model và kết nối
-.venv/bin/auto-sound --ip auto --mode semi --web
-
-# Hoặc chỉ định rõ profile thiết bị:
-.venv/bin/auto-sound --profile device_profiles/xr12.toml --mode semi --web
-.venv/bin/auto-sound --profile device_profiles/xr16.toml --mode semi --web
-.venv/bin/auto-sound --profile device_profiles/mr12.toml --mode semi --web
+# Chạy toàn bộ test Rust
+npm test    # tương đương: cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
----
+Số liệu test và hiện trạng kiểm chứng: xem `BAO_CAO_DU_AN.md` mục 5. Frontend chưa có test tự động.
 
 ---
 
-## 7. Các Tính Năng Mới & Chế Độ Vận Hành Nâng Cao
+## 4. Vận Hành
 
-1. **Chế Độ Mô Phỏng Hoàn Chỉnh (Demo/Mock Mode)**:
-   - Khi không kết nối mixer thật, hệ thống tự động chạy cỗ máy `FakeXR18` với bộ sinh tín hiệu đa kênh chân thực.
-   - Giao diện hiển thị rõ ràng badge `MÔ PHỎNG (DEMO)` (màu tím), không rơi vào trạng thái "ĐANG KẾT NỐI LẠI" vô hạn.
-   - Nút **⚡ Tạo Hú Giả** (`POST /api/v1/demo/feedback`): Bắn tín hiệu hú tần số tùy chọn để kiểm chứng trọn vẹn quy trình phát hiện -> đề xuất SEMI -> soundman duyệt -> hạ notch PEQ -> tự nhả (auto-release).
+Mở ứng dụng, quét mixer trong mạng LAN (UDP broadcast `/xinfo`, cổng 10024) hoặc nhập IP, rồi kết nối. Chế độ `auto` / `semi` / `manual` và nút PANIC nằm trên giao diện.
 
-2. **Chế Độ Chạy Thử An Toàn (Shadow / Dry-Run Mode)**:
-   - Tham số `--dry-run` hoặc công tắc toggle trên Web Companion.
-   - Hệ thống thực hiện toàn bộ quy trình phân tích âm thanh, định vị micro hú và ghi log chi tiết "sẽ cắt gì, ở đâu, band nào" nhưng **tuyệt đối KHÔNG gửi lệnh ghi xuống mixer**.
+### Kết nối XR18 / MR18 (USB 18x18 + LAN)
+1. Nối cáp mạng RJ45 trực tiếp từ laptop tới mixer (hoặc qua switch có dây). Tránh Wi-Fi 2.4GHz ở nơi đông người.
+2. Đặt IP tĩnh cùng subnet, ví dụ laptop `192.168.1.50`, mixer `192.168.1.100`, subnet `255.255.255.0`. Cổng OSC mặc định `10024`.
+3. Nối USB từ cổng USB B của mixer vào laptop; trong X-Air Edit, định tuyến 16 kênh micro tới USB Sends (`Direct Out`, pre-gain).
 
-3. **Bảng Chẩn Đoán Kết Nối & Hệ Thống (Diagnostics Panel)**:
-   - Giám sát trạng thái phần cứng (Thật vs Mock), địa chỉ IP, cổng OSC, tên model và firmware mixer.
-   - Phân biệt rõ ràng giữa **Độ trễ phản hồi OSC RTT** (đo bằng ping thực tế) và **Độ trễ lý thuyết DSP** (kích thước khung Hann FFT 42.7 ms / 64.0 ms).
-   - Trạng thái đăng ký luồng RTA 100-band (`/meters/4`) kèm cơ chế tự động gia hạn mỗi 7 giây.
-   - Kiểm tra thiết bị âm thanh USB PortAudio và định tuyến 16 kênh USB Sends.
+### Kết nối XR12 / XR16 / MR12 (RTA LAN)
+Các model này không có USB audio đa kênh. Hệ thống dùng luồng phổ RTA 100-band (`/meters/4`) qua LAN để dò hú trên Main L/R và hạ notch ở Band 3–6 (giữ Band 1–2 cho Soundman).
 
-4. **Thuật Toán Ring-out Tiền Show (Ring-out Wizard)**:
-   - Tự động tăng gain từ từ trên kênh được chọn trong giới hạn an toàn (+3 dB đến tối đa +6 dB), kích hoạt điểm hú cộng hưởng phòng.
-   - Tự động phát hiện và hạ notch dập tắt điểm hú.
-   - Nút Dừng Khẩn Cấp lập tức hạ gain trở lại mức ban đầu trước khi Ring-out.
-
-5. **Gợi Ý Gain Staging & Dynamics (Chỉ Gợi Ý)**:
-   - Phân tích tín hiệu âm lượng thời gian thực và đề xuất thông số Gain Staging (-18 dBFS RMS), ngưỡng Compressor và Gate. Không tự ý can thiệp phần cứng.
-
-6. **Lịch Sử Notch, Hoàn Tác Từng Điểm & Xuất Báo Cáo**:
-   - Cho phép hoàn tác (Undo) từng notch đơn lẻ mà không cần PANIC toàn bộ.
-   - Xuất báo cáo hoạt động show diễn định dạng CSV hoặc JSON.
-
-7. **Ghi Nhật Ký Ra File (Rotating File Logging)**:
-   - Toàn bộ exception và sự kiện hệ thống được ghi vào `logs/auto_sound.log` (tối đa 5 MB x 3 bản sao lưu xoay vòng) và stream đồng thời lên Web Companion.
-
-8. **Giao Diện Trừu Tượng Cho Dòng Behringer X32 / Midas M32 (`X32Client`)**:
-   - Giao diện driver kiến trúc và mock driver định hình cấu trúc 32 kênh, 6 band PEQ và cổng 10023, chuẩn bị cho lộ trình đa mixer trong tương lai.
+Profile thiết bị: thư mục `device_profiles/`.
 
 ---
 
-## 8. Hiện Trạng Kiểm Chứng: Mô Phỏng vs Phần Cứng Thật
+## 5. Hiện Trạng Kiểm Chứng
 
-### Đã kiểm chứng 100% trong môi trường mô phỏng (Simulation):
-- 85 kịch bản kiểm thử tự động (Unit test, Property-based testing với Hypothesis, End-to-End integration).
-- Bộ tạo tín hiệu âm thanh ảo 16 kênh và thuật toán phát hiện hú FFT 2048 mẫu / RTA 100-band.
-- Tính bất biến an toàn (Safety Invariants): Không bao giờ boost quá +4 dB, giới hạn giao dịch 2 tx/s, khóa tay soundman 10s, bảo vệ dải tần EQ của ca sĩ.
-- Giao diện Web Nuxt 4 / Vue 3 Static SPA biên dịch chuẩn xác, kết nối WebSocket 2 chiều mượt mà.
+Chưa có bằng chứng chạy với mixer thật. Số liệu test mô phỏng và danh sách phần chưa kiểm chứng: `BAO_CAO_DU_AN.md` mục 3.
 
-### CẦN KIỂM CHỨNG TRÊN PHẦN CỨNG THẬT (Khi có bàn mixer vật lý):
-1. **Độ trễ mạng OSC Ping thực tế (Real Network RTT)**: Đo đạc biến thiên RTT và độ ổn định gói tin UDP trên switch mạng có dây và Wi-Fi thực tế tại địa điểm biểu diễn.
-2. **Luồng USB 18x18 PortAudio kéo dài nhiều giờ**: Kiểm tra tỷ lệ xruns và độ trôi mẫu (clock drift) khi thu âm liên tục trong suốt buổi diễn kéo dài 3-4 tiếng.
-3. **Bộ dữ liệu kiểm định show diễn thật (`test_detector_benchmark_real_data`)**: Thu thập tối thiểu 100 mẫu âm thanh có nhãn "hú / không hú" từ micro sân khấu thật bằng công cụ `/api/v1/audio/record` để tinh chỉnh ngưỡng phát hiện tối ưu.
+Kế hoạch đưa sản phẩm tới mức bán được: `docs/plan/plan-release-readiness.md`. Quy trình đo phần cứng: `docs/HARDWARE_VALIDATION.md`.
 
 ---
 
-## 9. Cấu Trúc Dự Án
+## 6. Cấu Trúc Dự Án
 
 ```text
 xklive/
-├── pyproject.toml                      # Cấu hình dự án và dependencies
-├── README.md                           # Sách hướng dẫn vận hành chi tiết
-├── BAO_CAO_DU_AN.md                    # Báo cáo kỹ thuật tổng thể dự án
-├── run_ui.py                           # 1-Click Launcher khởi chạy Web Companion
-├── device_profiles/                    # Hồ sơ phần cứng (xr18, xr12, xr16, mr12)
-├── frontend/                           # Giao diện Nuxt 4 / Vue 3 SPA + Tailwind CSS
-├── src/auto_sound/
-│   ├── core/models.py                  # Dataclass lõi hệ thống & CapabilityMap
-│   ├── core/ringout.py                 # Auto Room Ring-Out cân phòng trước show
-│   ├── mixer/xair.py                   # X-Air Driver: Capability Probe, Discovery, OSC, PEQ Safety
-│   ├── audio/ring_buffer.py            # SPSC Ring Buffer 18 kênh zero-allocation
-│   ├── audio/io.py                     # Thu âm USB PortAudio & Virtual Generator
-│   ├── dsp/detector.py                 # Bộ dò hú FFT 2048 mẫu & Harmonic Rejection
-│   ├── dsp/rta_detector.py             # Bộ dò hú phổ RTA 100-band cho XR12/XR16
-│   ├── dsp/localizer.py                # Two-Factor Mic Localizer định vị micro hú
-│   ├── dsp/gain_staging.py             # Auto Preamp Gain Staging 10s & Clip Guardian
-│   ├── dsp/talkover.py                 # Smart FX Auto-Talkover (Ducking Reverb/Delay)
-│   ├── safety/controller.py            # Safety Controller: Rate limit, Probe, Reclaim
-│   ├── safety/snapshot.py              # Sao lưu và phục hồi Snapshot PEQ
-│   ├── app/cli.py                      # Runtime điều phối toàn trình
-│   ├── app/server.py                   # FastAPI REST API + WebSocket Server
-│   └── web/dist/                       # Bản dựng tĩnh Nuxt 4 / Vue 3 SPA
-├── tools/hardware_check.py             # Bộ kiểm chứng phần cứng thật (M5 Benchmark)
-└── tests/                              # 86 kịch bản kiểm thử tự động (85 pass / 1 skipped)
+├── src-tauri/src/
+│   ├── core/        # models, safety (rate limit, probing, khóa tay), ringout
+│   ├── mixer/       # xair.rs (OSC driver), mapper.rs (float <-> Hz/dB)
+│   ├── dsp/         # detector (FFT), rta_detector, localizer, gain_staging, talkover
+│   ├── audio/       # thu âm CPAL + ring buffer SPSC
+│   ├── commands.rs  # lệnh Tauri cho giao diện
+│   └── state.rs     # trạng thái ứng dụng
+├── frontend/        # Nuxt 4 / Vue 3 SPA + Scoped CSS
+├── device_profiles/ # profile từng model (TOML)
+├── docs/            # kế hoạch, API, SBOM, quy trình kiểm chứng phần cứng
+└── BAO_CAO_DU_AN.md # báo cáo trạng thái
 ```
 
 ---
 
-## 8. Giấy Phép & Bản Quyền
+## 7. Giấy Phép & Bản Quyền
 
-Dự án phát hành theo giấy phép **MIT**. 100% các thành phần phụ thuộc đều tương thích thương mại tự do (MIT, BSD, Apache-2.0, Unlicense).
+Repo chưa có file `LICENSE`; chủ dự án cần quyết định giấy phép trước khi phát hành.

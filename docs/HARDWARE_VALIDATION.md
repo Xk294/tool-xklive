@@ -1,6 +1,6 @@
 # HƯỚNG DẪN KIỂM CHỨNG GIAO THỨC TRÊN PHẦN CỨNG THẬT
 ## Thiết bị: Behringer XR18 / XR12 / XR16 & Midas MR18 / MR12
-**Mục tiêu:** Thu thập dữ liệu thực nghiệm để điền vào các thông số `[CẦN ĐO THẬT]` trong profile thiết bị.
+**Mục tiêu:** Thu thập dữ liệu thực nghiệm để điền vào các thông số `[NEEDS HARDWARE VERIFICATION]` trong profile thiết bị.
 
 ---
 
@@ -9,7 +9,7 @@
 ### 1.1. Thiết bị cần có
 1. Bàn mixer Behringer X-Air (XR18 / XR12 / XR16) hoặc Midas M-Air (MR18 / MR12).
 2. Dây cáp mạng LAN Cat5e / Cat6 RJ45 chất lượng tốt.
-3. Laptop cài đặt Python 3.11+ và repo `auto-sound`.
+3. Laptop cài Rust toolchain, Node.js và repo này (chạy bằng `npm run dev`).
 4. Phần mềm chính hãng **X-AIR Edit** trên laptop hoặc iPad để quan sát đối chiếu.
 
 ### 1.2. Thiết lập địa chỉ IP mạng có dây
@@ -33,35 +33,23 @@
 
 ## 2. QUY TRÌNH THỰC HIỆN THĂM DÒ (HARDWARE PROBE)
 
-### Bước 1: Chạy thử ở chế độ chỉ đọc (Dry-Read)
-Để đảm bảo an toàn tuyệt đối, chạy lệnh probe ở chế độ không ghi:
-```bash
-.venv/bin/python tools/hw_probe.py --ip 192.168.1.100 --dry-read --output probe_dry_read.json
-```
-- Kiểm tra xem script có bắt tay `/xinfo` thành công không (hiển thị Model và Firmware version).
+> **Chưa có công cụ probe tự động.** Bảng đo ở mục 3 hiện được thực hiện thông qua phần mềm X-AIR Edit kết hợp màn hình Diagnostics và bảng Cắt Notch Thủ Công của ứng dụng Tauri.
 
-### Bước 2: Chạy thăm dò toàn diện (Ghi có phục hồi an toàn)
-```bash
-.venv/bin/python tools/hw_probe.py --ip 192.168.1.100 --target-ch 16 --target-band 4 --rtt-count 200 --output probe_xr18_lan.json
-```
-- **Kênh được chọn:** Kênh 16, Band 4 (kênh cuối, ít sử dụng nhất trong soundcheck).
-- Script sẽ tự động:
-  1. Đọc và sao lưu giá trị PEQ gốc của Kênh 16 Band 4.
-  2. Đo giới hạn client `/xremote`.
-  3. Đo độ trễ RTT khứ hồi 200 lần.
-  4. Quét nấc lượng tử hóa của Gain, Q, Frequency.
-  5. Thăm dò luồng phổ RTA 100-band.
-  6. Đo thời gian echo của `/xremote`.
-  7. Thăm dò giới hạn tốc độ truyền nhận lệnh.
-  8. **Tự động khôi phục nguyên trạng tham số PEQ ban đầu.**
-
-> **Lưu ý an toàn:** Nếu bạn bấm `Ctrl-C` bất cứ lúc nào, script sẽ tự động kích hoạt hàm khôi phục cài đặt gốc của mixer trước khi thoát.
+Các phép đo cần thực hiện (giữ nguyên thang đo của quy trình cũ):
+1. Handshake `/xinfo` (model, firmware), chạy ở chế độ chỉ đọc trước.
+2. Giới hạn client `/xremote`.
+3. RTT khứ hồi 200 lần trên Kênh 16, Band 4 (kênh cuối, ít dùng nhất).
+4. Nấc lượng tử hóa của Gain, Q, Frequency.
+5. Luồng phổ RTA 100-band và tần suất cập nhật.
+6. Thời gian echo của `/xremote`.
+7. Giới hạn tốc độ gửi lệnh.
+8. Sao lưu PEQ gốc trước khi ghi và khôi phục nguyên trạng sau khi đo.
 
 ---
 
 ## 3. BẢNG MẪU ĐIỀN KẾT QUẢ ĐO KIỂM THỰC TẾ
 
-Sau khi chạy script, mở file `probe_xr18_lan.json` để lấy các số liệu điền vào bảng dưới đây và gửi lại cho nhóm phát triển:
+Sau khi đo, điền số liệu vào bảng dưới đây và gửi lại cho nhóm phát triển:
 
 | Thông số | Giả định hiện tại | Kết quả đo thực tế | Trạng thái xác minh | Ghi chú từ X-AIR Edit |
 | :--- | :--- | :--- | :--- | :--- |
@@ -81,9 +69,9 @@ Sau khi chạy script, mở file `probe_xr18_lan.json` để lấy các số li�
 
 ## 4. HƯỚNG DẪN CẬP NHẬT PROFILE THIẾT BỊ SAU KHI ĐO
 
-Khi đã có file JSON kết quả đo:
+Khi đã có kết quả đo:
 1. Mở file profile tương ứng trong `device_profiles/` (ví dụ `xr18.toml`).
-2. Điền các giá trị thực tế vào các trường `[CẦN ĐO THẬT]`.
+2. Điền các giá trị thực tế vào các trường `[NEEDS HARDWARE VERIFICATION]`.
 3. Bổ sung trường xác thực:
    ```toml
    [validation]
@@ -93,4 +81,4 @@ Khi đã có file JSON kết quả đo:
    tester_name = "Tên Kỹ Sư / Soundman"
    connection_type = "Wired LAN Cat6"
    ```
-4. Cập nhật `FakeXR18` trong `src/auto_sound/mixer/fake.py` để mô phỏng chính xác hành vi đo được từ phần cứng thật.
+4. Cập nhật test mô phỏng trong `src-tauri/src/mixer/` (hiện chưa có mixer giả) để phản ánh hành vi đo được từ phần cứng thật.

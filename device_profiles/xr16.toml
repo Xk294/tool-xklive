@@ -1,5 +1,5 @@
-# Hồ sơ thiết bị Behringer X-Air XR16
-# Hỗ trợ tự động chống hú qua mạng LAN dựa trên RTA 100-band và can thiệp PEQ Main L/R
+# Device profile for Behringer X-Air XR16
+# Supports LAN RTA 100-band feedback detection and Main L/R + Aux Bus PEQ cuts
 
 [device]
 name = "Behringer XR16"
@@ -13,25 +13,25 @@ has_multichannel_usb = false
 supports_rta_network = true
 
 [channels]
-# 8 kênh đầu vào mic preamps Midas-designed
+# 8 Midas-designed mic preamp input channels
 mic_channels = [1, 2, 3, 4, 5, 6, 7, 8]
-# 8 kênh line level TRS (kênh 9-16)
+# 8 TRS line-level input channels (9-16)
 line_channels = [9, 10, 11, 12, 13, 14, 15, 16]
 total_channels = 16
 
 [buses]
-# XR16 có 4 cổng Aux Out vật lý
+# XR16 has 4 physical Aux output buses
 aux_buses = [1, 2, 3, 4]
 
 [eq]
-# Main Stereo L/R có 6 band PEQ. Giữ Band 1 & 2 cho Soundman, dùng Band 3-6 làm Auto Notch
+# Main Stereo L/R has 6 PEQ bands; bands 1-2 reserved for FOH voicing, bands 3-6 for auto notch
 main_auto_notch_bands = [3, 4, 5, 6]
 auto_notch_bands = [3, 4]
 bus_auto_notch_bands = [5, 6]
 max_notches_per_channel = 2
 max_notches_per_target = 4
 
-# Thông số ánh xạ tham số EQ
+# EQ parameter mapping specification
 freq_min_hz = 20.0
 freq_max_hz = 20000.0
 freq_steps = 201

@@ -1,4 +1,5 @@
 {
+  "label": "MOCK 10s run from the legacy Python build \u2014 NOT a real soak. Real soak (>=4h, real mixer) is plan item B6.",
   "timestamp": "2026-10-21T12:59:06",
   "target_duration_s": 10.0,
   "actual_duration_s": 10.07,

@@ -1,5 +1,5 @@
-# Hồ sơ thiết bị Midas M-Air MR12
-# Hỗ trợ tự động chống hú qua mạng LAN dựa trên RTA 100-band và can thiệp PEQ Main L/R
+# Device profile for Midas M-Air MR12
+# Supports LAN RTA 100-band feedback detection and Main L/R + Aux Bus PEQ cuts
 
 [device]
 name = "Midas MR12"
@@ -13,7 +13,7 @@ has_multichannel_usb = false
 supports_rta_network = true
 
 [channels]
-# 4 kênh đầu vào mic preamps Midas PRO cao cấp
+# 4 Midas PRO mic preamp input channels
 mic_channels = [1, 2, 3, 4]
 line_channels = [5, 6, 7, 8, 9, 10, 11, 12]
 total_channels = 12

@@ -1,211 +1,123 @@
-# Tài Liệu Đặc Tả Giao Thức API & WebSocket (Protocol Specification v1)
+# Tài liệu Giao diện Lập trình Ứng dụng Nội bộ (Tauri IPC Commands)
 
-Hệ thống Auto Sound Engineer cung cấp giao diện lập trình ứng dụng REST và luồng dữ liệu thời gian thực hai chiều WebSocket (phiên bản `v1`).
-
----
-
-## 1. Nguyên Tắc Thiết Kế & Bảo Mật LAN
-
-1. **Mô hình kiến trúc Engine – UI độc lập:**
-   - Tiến trình Engine xử lý DSP và Safety Controller chạy liên tục trong nền, hoàn toàn độc lập với việc có trình duyệt nào đang kết nối hay không.
-   - Trình duyệt/iPad chỉ là giao diện hiển thị (View) và gửi ý định điều khiển (Intent). Mọi lệnh từ UI đều bắt buộc đi qua Safety Controller trước khi gửi tới mixer.
-2. **Không kết nối Internet:**
-   - 100% tài nguyên giao diện được phục vụ cục bộ từ máy tính chạy engine, **không sử dụng bất kỳ liên kết CDN bên ngoài nào**.
-3. **Bảo mật mạng LAN (`--listen-lan`):**
-   - Mặc định server chỉ bind địa chỉ loopback nội bộ `127.0.0.1:8000`.
-   - Khi chạy với cờ `--listen-lan` (để kết nối từ iPad/điện thoại trong mạng LAN), hệ thống sinh một mã PIN ngẫu nhiên 4 chữ số hiển thị trên màn hình máy tính chủ.
-   - Client phải thực hiện bắt tay tại endpoint `/api/v1/pair/verify` để nhận `pairing_token`.
-   - Mọi yêu cầu ghi dữ liệu (POST, PUT, DELETE) từ client chưa ghép nối hợp lệ sẽ bị từ chối với mã lỗi `401 Unauthorized`.
-   - Toàn bộ lệnh gửi đến server đều được ghi log kèm địa chỉ IP của client.
+> **Lưu ý kiến trúc**: Ứng dụng chạy trên kiến trúc **Tauri v2 (Rust Backend) + Nuxt 4 (SPA Frontend)**. Giao diện giao tiếp trực tiếp với nhân xử lý âm thanh Rust thông qua cơ chế Tauri IPC (`invoke` từ `@tauri-apps/api/core`), không mở cổng HTTP/WebSocket ra mạng LAN.
 
 ---
 
-## 2. Các Endpoint REST API (`/api/v1`)
+## 1. Cấu trúc Trạng thái Đồng bộ (`FullStateSnapshot`)
 
-### 2.1. Trạng Thái Hệ Thống
-- **`GET /api/v1/status`**
-  - **Mô tả:** Lấy thông tin trạng thái hoạt động hiện tại của engine và mixer.
-  - **Phản hồi mẫu (200 OK):**
-    ```json
-    {
-      "mixer_state": "CONNECTED",
-      "model": "XR18",
-      "firmware": "1.18",
-      "mode": "auto",
-      "lan_rta_mode": false,
-      "latency_ms": 64.0,
-      "xruns": 0,
-      "reconnect_count": 0,
-      "uptime_s": 1420.5,
-      "active_notches_count": 2,
-      "pending_proposals_count": 0,
-      "is_lan_locked": false
-    }
-    ```
+Lệnh `get_state` trả về đối tượng JSON `FullStateSnapshot` chứa toàn bộ trạng thái thời gian thực để hiển thị trên giao diện:
 
-### 2.2. Chế Độ Vận Hành
-- **`POST /api/v1/mode`**
-  - **Mô tả:** Thay đổi chế độ (`auto`, `semi`, `manual`). Khi chuyển từ `manual`/`semi` lên `auto`, bắt buộc phải có cờ `confirm: true`.
-  - **Yêu cầu (Body JSON):**
-    ```json
-    {
-      "mode": "auto",
-      "confirm": true
-    }
-    ```
-  - **Phản hồi mẫu (200 OK):**
-    ```json
-    {
-      "success": true,
-      "current_mode": "auto",
-      "message": "Đã chuyển sang chế độ tự động can thiệp"
-    }
-    ```
-
-### 2.3. Hàng Đợi Đề Xuất (Chế độ `semi`)
-- **`GET /api/v1/proposals`**
-  - **Mô tả:** Lấy danh sách các đề xuất hạ notch đang chờ duyệt.
-  - **Phản hồi mẫu (200 OK):**
-    ```json
-    {
-      "proposals": [
-        {
-          "id": "prop_101",
-          "channel": 1,
-          "bus": null,
-          "target": "ch",
-          "freq_hz": 3150.0,
-          "gain_db": -3.0,
-          "q": 8.0,
-          "confidence_score": 0.82,
-          "created_at": 1729480000.12,
-          "ttl_remaining_s": 15.4,
-          "reason": "Phát hiện hú 3150.0 Hz"
-        }
-      ]
-    }
-    ```
-
-- **`POST /api/v1/proposals/{id}/approve`**
-  - **Mô tả:** Kỹ sư âm thanh duyệt áp dụng đề xuất. Lệnh được đẩy ngay vào Safety Controller.
-- **`POST /api/v1/proposals/{id}/reject`**
-  - **Mô tả:** Kỹ sư từ chối đề xuất. Đề xuất bị xóa khỏi hàng đợi.
-- **`POST /api/v1/proposals/{id}/snooze`**
-  - **Mô tả:** Tạm thời bỏ qua kênh này trong 60 giây (tương đương khóa tạm thời kênh).
-
-### 2.4. Danh Sách Notch Đang Hoạt Động
-- **`GET /api/v1/notches`**
-  - **Mô tả:** Lấy danh sách toàn bộ các notch đang cắt trên mixer.
-  - **Phản hồi mẫu (200 OK):**
-    ```json
-    {
-      "notches": [
-        {
-          "channel": 1,
-          "bus": null,
-          "band": 3,
-          "freq_hz": 3150.0,
-          "gain_db": -6.0,
-          "q": 8.0,
-          "target": "ch",
-          "age_s": 42.5,
-          "is_locked": false,
-          "step_count": 2,
-          "remaining_bands_on_target": 1
-        }
-      ]
-    }
-    ```
-
-- **`POST /api/v1/notches/release`**
-  - **Mô tả:** Nhả một notch cụ thể hoặc toàn bộ về 0 dB.
-  - **Yêu cầu (Body JSON):**
-    ```json
+```json
+{
+  "mixer_status": "CONNECTED | RECONNECTING | DISCONNECTED | MOCK",
+  "mixer_model": "XR18",
+  "current_mode": "auto | semi | manual",
+  "current_preset": "monitor | foh | acoustic | speech",
+  "audio_mode": "usb | lan_rta | none",
+  "talkover_enabled": false,
+  "talkover_is_ducked": false,
+  "talkover_mic_channel": 1,
+  "clip_alerts": [],
+  "gain_sessions": {},
+  "dry_run": false,
+  "latency_ms": 44.8,
+  "rtt_ms": 2.1,
+  "dsp_latency_ms": 42.7,
+  "active_notches": [
     {
       "channel": 1,
+      "channel_name": "CH 01",
+      "bus": null,
       "band": 3,
-      "target": "ch"
+      "freq_hz": 2500.0,
+      "gain_db": -3.0,
+      "q": 8.0,
+      "target": "ch",
+      "age_s": 12.4,
+      "is_locked": false,
+      "step_count": 1
     }
-    ```
-- **`POST /api/v1/notches/lock`**
-  - **Mô tả:** Khóa cố định một notch (không tự động nhả bằng auto-release, dùng cho soundcheck).
-
-### 2.5. Nút Khẩn Cấp PANIC & Hoàn Tác
-- **`POST /api/v1/panic`**
-  - **Mô tả:** **KHẨN CẤP** - Nhả toàn bộ các notch hệ thống về 0 dB ngay lập tức trong 1 thao tác duy nhất.
-  - **Phản hồi mẫu (200 OK):**
-    ```json
+  ],
+  "pending_proposals": [
     {
-      "success": true,
-      "released_count": 2,
-      "message": "Đã thực thi PANIC: Hoàn tác toàn bộ notch về 0 dB"
+      "id": "ch_2_1600",
+      "channel": 2,
+      "bus": null,
+      "target": "ch",
+      "freq_hz": 1600.0,
+      "gain_db": -3.0,
+      "q": 8.0,
+      "confidence_score": 0.85,
+      "created_at": 1729770000.0,
+      "ttl_remaining_s": 10.0,
+      "reason": "Feedback at 1600Hz"
     }
-    ```
-
-- **`POST /api/v1/panic/undo`**
-  - **Mô tả:** Khôi phục lại trạng thái các notch trước khi bấm PANIC (nếu bấm nhầm).
-
-### 2.6. Đồng Hồ Mức Tín Hiệu (Meters)
-- **`GET /api/v1/meters`**
-  - **Mô tả:** Đọc mức tín hiệu 18 kênh, trạng thái mute, trạng thái khóa tay và cảnh báo hú.
-
-### 2.7. Snapshot & Rollback
-- **`POST /api/v1/snapshot/take`**
-  - **Mô tả:** Chụp lại toàn bộ trạng thái PEQ trước show.
-- **`POST /api/v1/snapshot/rollback`**
-  - **Mô tả:** Khôi phục toàn bộ PEQ về bản chụp snapshot trong thời gian < 1.0 giây.
-
-### 2.8. Ghép Nối Thiết Bị LAN (Pairing)
-- **`GET /api/v1/pair/pin`** (Chỉ khả dụng trên localhost)
-  - **Mô tả:** Lấy mã PIN đang hiển thị.
-- **`POST /api/v1/pair/verify`**
-  - **Mô tả:** Gửi mã PIN để nhận `pairing_token` phục vụ các thao tác ghi.
-  - **Yêu cầu (Body JSON):**
-    ```json
+  ],
+  "channels": [
     {
-      "pin": "1234"
+      "channel": 1,
+      "name": "CH 01",
+      "color": 1,
+      "is_muted": false,
+      "level": 0.12,
+      "is_locked": false,
+      "whitelisted": true,
+      "hpf_enabled": false
     }
-    ```
+  ],
+  "meters": [0.12, 0.0, 0.05],
+  "rta_bins": [-65.0, -64.2],
+  "event_logs": [
+    {
+      "id": 1,
+      "time": "20:15:30",
+      "text": "Connected to mixer at 192.168.1.100:10024",
+      "type": "approved"
+    }
+  ]
+}
+```
 
 ---
 
-## 3. Giao Thức WebSocket (`/ws`)
+## 2. Danh mục Lệnh Tauri IPC (`src-tauri/src/commands.rs`)
 
-### 3.1. Kết Nối & Xác Thực
-- Địa chỉ: `ws://<server_ip>:8000/ws` (hoặc `ws://<server_ip>:8000/ws?token=<token>`).
-- Ngay khi kết nối thành công, Server gửi ngay một gói tin loại `state_snapshot`:
-  ```json
-  {
-    "type": "state_snapshot",
-    "timestamp": 1729480000.5,
-    "status": { ... },
-    "notches": [ ... ],
-    "proposals": [ ... ],
-    "meters": [ -60.0, -24.5, ... ]
-  }
-  ```
+### 2.1. Kết nối Mixer & Thiết bị Âm thanh
+- `get_state() -> FullStateSnapshot`: Lấy ảnh chụp trạng thái tổng thể của hệ thống.
+- `discover_mixers_cmd(timeoutMs?: number, port?: number) -> DiscoveredMixer[]`: Quét broadcast UDP `/xinfo` trên các dải mạng LAN để tự động tìm bàn mixer X-Air / M-Air.
+- `connect_mixer(ip: string, port: number) -> boolean`: Kết nối tới bàn mixer tại địa chỉ IP và cổng UDP (mặc định `10024`), khởi tạo luồng duy trì `/xremote` và đăng ký `/meters`.
+- `disconnect_mixer() -> void`: Ngắt kết nối OSC với bàn mixer và dọn sạch phiên tạm thời.
+- `list_audio_devices() -> AudioDeviceItem[]`: Liệt kê danh sách thiết bị thu âm đầu vào (`cpal`) trên máy tính.
+- `start_audio_capture(deviceName?: string | null) -> boolean`: Bắt đầu luồng thu âm thời gian thực và phân tích phổ FFT đa kênh (tự động lọc rò âm Crosstalk Veto).
+- `stop_audio_capture() -> void`: Dừng luồng thu âm hiện tại.
+- `get_diagnostics() -> object`: Trả về thông số chẩn đoán kết nối OSC, RTT, thiết bị âm thanh và định tuyến.
 
-### 3.2. Các Gói Tin Phát Sóng (Server Broadcast)
-1. **`proposal_added`:** Có đề xuất mới được sinh ra từ detector.
-2. **`proposal_resolved`:** Đề xuất được duyệt, từ chối hoặc tự hết hạn.
-3. **`notch_updated`:** Trạng thái danh sách notch thay đổi (cắt mới, nhả bước, nhả hết).
-4. **`panic_event`:** Sự kiện Panic vừa được kích hoạt.
-5. **`meter_frame`:** Mức âm lượng 18 kênh (cập nhật ~10 FPS).
-6. **`rta_frame`:** Khung phổ năng lượng RTA 100-band hoặc FFT log-scale (~20-25 FPS).
+### 2.2. Điều khiển Chống hú, Preset & Hỗ trợ Show Đơn giản (Safety, Notch Filters & Simple Show Assistant)
+- `set_mode(mode: 'auto' | 'semi' | 'manual') -> void`: Chuyển đổi chế độ vận hành.
+- `apply_preset(preset: 'monitor' | 'foh' | 'acoustic' | 'speech') -> object`: Áp dụng cấu hình DSP và Safety thật cho từng kịch bản sự kiện (`Q`, ngưỡng độ nhọn phổ, giới hạn cắt sâu `max_cut_db`, và bật/tắt `Talkover` tương ứng).
+- `set_talkover_config(enabled: boolean, micChannel?: number | null, fxReturn?: number | null, duckingDepthDb?: number | null) -> object`: Bật/tắt chế độ tự động dìm fader FX Return (Reverb/Delay) khi MC phát biểu (`TalkoverController`), kèm tôn trọng khóa chỉnh tay 10s trên `/fxrtn/xx/mix/fader`.
+- `start_gain_calibration(channel: number) -> { success: boolean, channel: number, session: GainCalibrationSession }`: Khởi chạy phiên đo mức tín hiệu chuẩn 10 giây cho một kênh micro để đưa ra gợi ý chỉnh Gain đầu vào.
+- `cancel_gain_calibration(channel: number) -> { success: boolean, channel: number }`: Hủy phiên đo Gain đang chạy trên kênh chỉ định.
+- `apply_channel_hpf(channel: number, enabled: boolean, freqHz?: number | null) -> boolean`: Bật/tắt bộ lọc cắt trầm High-Pass Filter (`/ch/xx/preamp/hpon` và `/ch/xx/preamp/hpf`, mặc định `80 Hz`) để khử tiếng ù nền và tiếng bụp môi cho micro.
+- `toggle_dry_run(enabled?: boolean) -> boolean`: Bật/tắt chế độ chạy thử (chỉ mô phỏng trên giao diện, không gửi gói OSC thay đổi PEQ xuống mixer).
+- `toggle_lock(channel: number) -> boolean`: Khóa hoặc mở khóa bảo vệ kênh không cho thuật toán tự động cắt PEQ.
+- `toggle_whitelist(channel: number) -> boolean`: Thêm hoặc gỡ kênh khỏi danh sách cho phép can thiệp tự động.
+- `approve_proposal(channel: number, freqHz: number, id?: string) -> boolean`: Duyệt đề xuất cắt hú trong chế độ Bán tự động (`semi`).
+- `reject_proposal(channel: number, freqHz: number, id?: string) -> void`: Từ chối và xóa đề xuất cắt hú khỏi hàng đợi.
+- `snooze_proposal(channel: number, freqHz: number, id?: string) -> void`: Bỏ qua đề xuất và tạm khóa kênh đó trong 60 giây.
+- `apply_manual_notch(target: string, channel: number, bus: number | null, freqHz: number, gainDb: number, q: number) -> boolean`: Cắt nhanh một điểm PEQ thủ công từ bảng điều khiển hoặc biểu đồ RTA.
+- `release_notch(channel: number, band: number, target: string, bus?: number | null) -> void`: Nhả một bộ lọc notch đang hoạt động về giá trị Gain, tần số và Q gốc của kỹ thuật viên.
+- `panic_reset() -> void`: Kích hoạt khẩn cấp **PANIC** — hoàn tác toàn bộ các dải PEQ đã cắt về trạng thái gốc (có điều tiết tốc độ OSC) và chuyển hệ thống sang chế độ `manual`.
+- `undo_panic_reset() -> number`: Khôi phục lại danh sách các điểm cắt vừa bị xóa bởi thao tác `panic_reset`.
 
-### 3.3. Lệnh Gửi Từ Client Qua WebSocket (Client Message)
-Client có thể gửi các lệnh JSON trực tiếp:
-```json
-{
-  "action": "approve_proposal",
-  "proposal_id": "prop_101",
-  "token": "secret_token_if_lan"
-}
-```
-hoặc:
-```json
-{
-  "action": "panic",
-  "token": "secret_token_if_lan"
-}
-```
+### 2.3. Snapshot, Ring-Out Wizard & Báo cáo
+- `take_snapshot() -> { success: boolean, bands_count: number }`: Lưu bản chụp cấu hình các dải PEQ hiện tại trước giờ diễn.
+- `rollback_snapshot() -> { success: boolean, restored_count: number, message: string }`: Khôi phục toàn bộ các dải PEQ về bản chụp Snapshot đã lưu qua `set_peq()`.
+- `start_wizard(channel?: number, maxBoostDb?: number, dwellTimeS?: number) -> { success: boolean }`: Khởi chạy quy trình dò điểm hú trước giờ diễn (`RingOutController`).
+- `stop_wizard() -> RingOutReport`: Dừng quy trình dò hú và lập tức trả fader về mức ban đầu (hoặc đặt lịch hoàn trả ngay khi kết nối lại).
+- `get_wizard_status() -> WizardStatusSnapshot`: Lấy trạng thái tiến trình Ring-Out Wizard kèm danh sách tần số cộng hưởng đã xử lý (`detected_frequencies`).
+- `get_dynamics_suggestions() -> { suggestions: DynamicsSuggestionItem[] }`: Lấy gợi ý Gain Staging, Compressor và Noise Gate dựa trên mức tín hiệu các kênh.
+- `trigger_demo_feedback(channel: number, freqHz: number, gainDb?: number) -> void`: Bơm tín hiệu hú mô phỏng để kiểm tra quy trình phát hiện và cắt notch.
+- `export_report(format?: 'json' | 'csv') -> string`: Xuất báo cáo danh sách các điểm cắt notch ra định dạng JSON hoặc CSV.
+- `clear_logs() -> void`: Xóa nhật ký sự kiện hệ thống.

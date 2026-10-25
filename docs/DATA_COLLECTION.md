@@ -1,107 +1,77 @@
-# Kế Hoạch Thu Thập Dữ Liệu Thực Địa & Đánh Giá Detector (Data Collection Protocol)
+# QUY TRÌNH THU THẬP DỮ LIỆU ÂM THANH THỰC TẾ (FIELD DATA COLLECTION)
 
-Tài liệu hướng dẫn kỹ thuật viên âm thanh (Soundman) thực hiện thu thập dữ liệu âm thanh đa kênh thực tế nhằm xây dựng bộ dữ liệu kiểm định chuẩn cho hệ thống Auto Sound Engineer.
+Tài liệu này hướng dẫn cách thu thập các bản ghi âm thanh đa kênh (Multitrack WAV) và nhật ký trạng thái mixer tại hiện trường (phòng họp, hội trường, sân khấu). Dữ liệu thu được dùng để tinh chỉnh ngưỡng phát hiện hú (`FeedbackDetector`) và kiểm thử hồi quy.
 
----
-
-## 1. Mục Tiêu & Tiêu Chuẩn Bộ Dữ Liệu
-
-Để đảm bảo thuật toán phát hiện hú đạt chuẩn công nghiệp, hạn chế tối đa báo động giả (False Positive) và không bỏ sót hú (False Negative / Recall ≥ 98%), bộ dữ liệu phải đáp ứng số lượng tối thiểu:
-
-1. **≥ 100 mẫu hú thật (Howling Samples):**
-   - Đa dạng dải tần: Bass/Low-mid (150 Hz - 500 Hz), Mid (500 Hz - 2 kHz), Treble/High-mid (2 kHz - 8 kHz), Ultra-high (8 kHz - 15 kHz).
-   - Đa dạng loại micro: Dynamic (Shure SM58, Beta 58A, Sennheiser e835), Condenser (Rode M2, Shure SM86), Headset/Lavalier.
-   - Đa dạng môi trường: Hội trường kín (nhiều vang dội), không gian ngoài trời, phòng tập hẹp.
-   - Nguồn phát hồi tiếp: Loa Monitor kiểm âm sàn (Wedge), Loa FOH (Main PA), Loa In-ear (nếu rò rỉ âm học).
-
-2. **≥ 250 mẫu không hú (Non-Howling / Clean Samples):**
-   - **Giọng hát ngân dài (Vibrato/Soprano/Belting):** Thử thách lớn nhất gây báo động giả do phổ năng lượng đỉnh tập trung giống hú.
-   - **Giọng nói MC/Diễn thuyết:** Năng lượng biến thiên nhanh, plosives (p, b), sibilance (s, x, ch).
-   - **Nhạc cụ có hài âm đặc trưng:**
-     - Guitar điện Solo/Distortion/Sustain cao.
-     - Bộ gõ: Snare, Kick, Hi-hat, Ride/Crash Cymbal (năng lượng tần số cao rất lớn).
-     - Sáo trúc, Đàn bầu, Nhạc cụ dân tộc (dễ trùng đỉnh đơn tần).
-     - Bass guitar, Synth sub-bass.
-   - **Tiếng ồn môi trường:** Khán giả vỗ tay, hò reo, tiếng ồn gió mic, tiếng rút cắm jack (thump).
-   - **Nhạc nền phát lại (Backing Track):** Nhạc EDM, Pop, Rock, Bolero phát qua cổng USB 17/18.
+> **LƯU Ý HIỆN TRẠNG**: Kịch bản thu thập tự động bằng Python trước đây đã được gỡ bỏ khi dự án chuyển sang kiến trúc Rust/Tauri (`src-tauri/`). Hiện tại, việc thu âm thực địa được thực hiện bằng phần mềm DAW tiêu chuẩn (Reaper, Audacity, Waves Tracks Live) kết hợp ghi chú biên bản hiện trường theo quy trình dưới đây, hoặc xuất báo cáo sự kiện trực tiếp từ ứng dụng Tauri (`Export JSON/CSV`).
 
 ---
 
-## 2. Quy Tắc An Toàn Tuyệt Đối Khi Tạo Hú Thật
+## 1. Mục tiêu Thu thập Dữ liệu
 
-> ⚠️ **CẢNH BÁO NGUY HIỂM VỀ PHẦN CỨNG & THÍNH GIÁC:**
-> Hú ở tần số cao (3 kHz - 12 kHz) với năng lượng liên tục có thể **cháy củ loa Treble (Diaphragm Tweeter)** chỉ trong 2-3 giây do quá nhiệt cuộn dây cone. Hú ở tần số trầm (sub-bass) có thể làm đứt gân loa bass do quá biên độ.
+Một bộ dữ liệu chuẩn giúp thuật toán phân biệt chính xác giữa **tiếng hú thật (Acoustic Feedback)** và **âm thanh biểu diễn bình thường (Nhạc cụ, Giọng hát)**:
 
-Khi chủ động kích hoạt hú phục vụ lấy mẫu, **BẮT BUỘC** tuân thủ:
+1. **Dữ liệu Dương tính (True Positives - Tiếng hú thật)**:
+   - Tiếng hú chớm nở (Ringing) ở dải tần thấp (150Hz – 400Hz - um tiếng), dải trung (800Hz – 2.5kHz - giọng nói) và dải cao (3kHz – 8kHz - chói gắt).
+   - Tiếng hú xuất hiện khi ca sĩ đưa micro lại gần loa kiểm âm (Monitor) hoặc đi ra trước loa chính (FOH).
 
-1. **Hạ Master Fader (Main/Aux):** Luôn khống chế Fader tổng ở mức vừa đủ nghe rõ (khoảng -20 dB đến -12 dB), không bao giờ thử nghiệm ở mức công suất trình diễn tối đa của dàn loa.
-2. **Bảo vệ loa Treble:**
-   - Cài đặt sẵn Limiter/Compressor trên Master hoặc Aux Bus với ngưỡng trần (Threshold) an toàn.
-   - Ngắt ngay tín hiệu (kéo Fader xuống hoặc bấm Mute) trong vòng **tối đa 2.5 - 3.0 giây** sau khi tiếng hú bùng phát.
-3. **Bảo vệ tai người thử nghiệm:** Toàn bộ nhân sự trong phòng phải đeo nút bịt tai bảo hộ hoặc tai nghe chống ồn công nghiệp khi đo kiểm ở cự ly gần loa.
-4. **Không thử nghiệm khi có khán giả:** Toàn bộ các buổi thu hú thực tế chỉ được diễn ra trong phiên Soundcheck hoặc buổi diễn tập (Rehearsal) không có công chúng.
-
----
-
-## 3. Quy Trình Thu Âm Đa Kênh Bằng `tools/record_session.py`
-
-### 3.1. Kết Nối Phần Cứng
-1. Cắm dây cáp USB từ cổng USB Audio của mixer Behringer XR18 / MR18 vào máy tính.
-2. Kiểm tra Audio Interface trên máy tính nhận diện đúng: `18 in / 18 out, 48000 Hz, 24-bit`.
-3. Bật X-Air Edit, vào mục **In/Out -> USB Returns** và **USB Sends**, đảm bảo 16 kênh mic/line và 2 kênh Main L/R được định tuyến trực tiếp vào luồng USB 1-18 (Tap Point: `Analog In` hoặc `Pre-EQ`).
-
-### 3.2. Chạy Lệnh Ghi Âm Kèm Gắn Nhãn
-Mở Terminal trên máy tính điều khiển và chạy:
-```bash
-.venv/bin/python3 tools/record_session.py \
-    --output-dir data/recordings \
-    --name soundcheck_show_01 \
-    --channels 18 \
-    --rate 48000
-```
-
-### 3.3. Thao Tác Gắn Nhãn Thời Gian Thực (Hotkeys)
-Trong khi ghi âm đang chạy, kỹ thuật viên thao tác nhanh bằng bàn phím:
-- **Bấm phím `h`:** Đánh dấu bắt đầu xuất hiện tiếng hú (`howl_start`).
-- **Bấm phím `e`:** Đánh dấu kết thúc tiếng hú (`howl_end`) ngay sau khi kéo fader dập tắt hú. Hệ thống sẽ tự tính độ dài `duration_s`.
-- **Bấm phím `m`:** Đánh dấu đoạn âm nhạc/nhạc cụ sạch không hú (`music`) để làm mẫu huấn luyện âm tính (negative samples).
-- **Bấm phím `n`:** Nhập ghi chú bổ sung (ví dụ: *Mic ca sĩ đi lại gần monitor 2*, *Guitar lead solo*).
-- **Bấm phím `q`:** Dừng phiên ghi và tự động lưu:
-  - `soundcheck_show_01.wav` (WAV 18 kênh, 48kHz, 16-bit)
-  - `soundcheck_show_01_labels.csv` (Bảng nhãn mốc thời gian dạng bảng)
-  - `soundcheck_show_01_labels.json` (Dữ liệu nhãn định dạng JSON cho pipeline)
+2. **Dữ liệu Âm tính khó (Hard Negatives - Dễ gây cắt nhầm / False Positives)**:
+   - Tiếng ngân giọng hát dài (Sustained Vocal / Opera / Bolero).
+   - Tiếng sáo trúc, đàn bầu, violin, guitar điện có hiệu ứng sustain/overdrive.
+   - Tiếng còi, chuông hoặc hiệu ứng âm thanh tổng hợp (Synth Pad) trong nhạc nền.
 
 ---
 
-## 4. Cấu Trúc Thư Mục Lưu Trữ Bộ Dữ Liệu Chuẩn
+## 2. Thiết bị & Kết nối Chuẩn bị
 
-Sau khi thu thập, các phiên ghi âm được phân loại theo cấu trúc:
+1. **Bàn Mixer**: Behringer XR18 / Midas MR18 (hỗ trợ ghi âm 18 kênh qua USB) hoặc XR12/XR16/MR12 (thu qua ngõ USB 2-track hoặc soundcard rời).
+2. **Cáp kết nối**:
+   - Cáp mạng LAN kết nối máy tính với cổng Ethernet của Mixer (đặt công tắc ở vị trí **ETHERNET**) để ứng dụng Tauri giám sát OSC.
+   - Cáp USB 2.0 kết nối từ cổng USB của Mixer vào máy tính để thu âm đa kênh.
+3. **Cấu hình định tuyến USB Sends trên Mixer (XR18/MR18)**:
+   - Đặt **Channel 1–16 USB Sends** ở vị trí **Analog (Pre-EQ / Pre-Fader)**.
+   - Đặt **USB 17–18** ở vị trí **Main L/R (Post-EQ)** để đối chiếu tín hiệu tổng trước và sau khi cắt PEQ.
+
+---
+
+## 3. Quy trình Thu âm & Đánh nhãn tại Hiện trường
+
+### 3.1. Thiết lập dự án thu âm trên DAW
+1. Mở phần mềm thu âm (ví dụ: Reaper), chọn thiết bị đầu vào là `X18/XR18 USB Audio` ở tần số lấy mẫu **48000 Hz**, định dạng **24-bit PCM WAV**.
+2. Tạo 18 rãnh (tracks) tương ứng với 18 kênh đầu vào USB và bật chế độ chờ ghi âm (Record Arm).
+
+### 3.2. Thực hiện ghi âm và đánh dấu mốc thời gian (Marker)
+Trong suốt buổi tổng duyệt (Soundcheck) hoặc biểu diễn:
+- Nhấn phím tạo Marker trên DAW (phím `M` trong Reaper) ngay tại thời điểm xảy ra sự kiện và ghi nhãn thống nhất:
+  - `HOWL`: Bắt đầu nghe thấy tiếng hú rít rõ rệt.
+  - `RING`: Tiếng ngân đuôi tần số (chớm hú khi nói lớn).
+  - `MUSIC`: Độc tấu nhạc cụ ngân dài (Sáo, Violin, Guitar Lead) — không được phép cắt nhầm.
+  - `VOCAL`: Ca sĩ ngân nốt cao kéo dài — không được phép cắt nhầm.
+
+### 3.3. Xuất dữ liệu sau buổi diễn
+1. Xuất các rãnh âm thanh từ DAW ra thư mục phiên đo kiểm kèm tệp danh sách Marker (`.csv`).
+2. Trên giao diện **Auto Sound Engineer**, nhấn nút **Xuất JSON** hoặc **Xuất CSV** tại bảng *Bộ lọc Notch đang hoạt động* để lưu lại lịch sử các điểm tần số đã can thiệp trong phiên.
+
+---
+
+## 4. Cấu trúc Lưu trữ Phiên Đo kiểm
+
+Mỗi phiên thu thập dữ liệu được lưu thành một thư mục riêng biệt (không đưa các tệp `.wav` dung lượng lớn lên kho mã nguồn Git):
+
 ```text
-data/
-└── recordings/
-    ├── README.md                          # Ghi chú tổng quan về các buổi diễn
-    ├── 20261021_stage_acoustic_hall/     # Buổi diễn tại phòng hoà nhạc
-    │   ├── session_01.wav
-    │   ├── session_01_labels.csv
-    │   └── session_01_labels.json
-    ├── 20261022_outdoor_rock_rehearsal/   # Buổi diễn tập nhạc Rock ngoài trời
-    │   ├── session_01.wav
-    │   ├── session_01_labels.csv
-    │   └── session_01_labels.json
-    └── benchmark_manifest.json            # Chỉ mục tổng hợp các đoạn audio đã cắt
+session_YYYYMMDD_HHMMSS_<ten_dia_diem>/
+├── session_metadata.json     # Thông tin phòng, dòng mixer, firmware, cấu hình loa
+├── markers.csv               # Các mốc thời gian đánh nhãn (HOWL, RING, MUSIC, VOCAL)
+├── auto_sound_report.json    # Báo cáo xuất từ ứng dụng Tauri
+└── audio_18ch.wav            # Tệp âm thanh đa kênh 48kHz PCM
 ```
 
 ---
 
-## 5. Tiêu Chí Nghiệm Thu Benchmark Detector (Giai đoạn C3 & C4)
+## 5. Kịch bản Thu thập Mẫu (15 Phút tại Sân khấu)
 
-Sau khi bộ dữ liệu thực địa đạt đủ số lượng mẫu, chạy pipeline benchmark:
-```bash
-.venv/bin/pytest tests/test_detector_sim.py -k test_detector_benchmark_real_data -v
-```
-
-**Chỉ số bắt buộc để qua Cổng kiểm C:**
-- **Recall (Độ nhạy phát hiện hú):** ≥ 98% (với 95% khoảng tin cậy Wilson [95.0% - 100.0%]).
-- **False Positive Rate (Báo động giả):** < 0.5% trên tổng số 250 đoạn âm nhạc/giọng hát.
-- **Thời gian phát hiện trung bình (Latency):** ≤ 70 ms từ khi biên độ vượt ngưỡng tăng trưởng đến lúc phát cờ hú.
-- Nếu không đạt chỉ số trên, **giữ nguyên số liệu trung thực**, không điều chỉnh dữ liệu kiểm thử, chuyển sang phân tích ma trận nhầm lẫn (Confusion Matrix) để tinh chỉnh bộ trích xuất đặc trưng phổ.
+| Thời lượng | Nội dung thực hiện | Nhãn đánh dấu |
+| :--- | :--- | :--- |
+| **3 phút đầu** | Để phòng yên tĩnh, bật toàn bộ micro để thu nền nhiễu tự nhiên (Noise Floor) của phòng và hệ thống. | `NOISE_FLOOR` |
+| **4 phút tiếp** | Đọc thử micro ("Một, hai, ba, bốn, sáu, bảy..."), đi lại quanh sân khấu ở mức âm lượng bình thường. | `SPEECH` |
+| **4 phút tiếp** | Mở nhạc nền có nhiều nhạc cụ ngân dài (Sáo, Guitar, Synth) và hát thử các câu ngân dài. | `MUSIC` / `VOCAL` |
+| **4 phút cuối** | (Chỉ thực hiện khi không có khán giả) Tăng nhẹ fader từng bước nhỏ (+1dB) qua công cụ **Ring-out Wizard** cho đến khi chớm nghe tiếng ngân/hú nhẹ, đánh dấu rồi hạ fader ngay. | `RING` / `HOWL` |

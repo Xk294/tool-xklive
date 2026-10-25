@@ -1,16 +1,5 @@
-# Python & Virtual Environments
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
+# Build output
 /build/
-
-# Testing & Cache
-.pytest_cache/
-.hypothesis/
-soak_report.json
 
 # Audio Data & Recordings
 *.wav
