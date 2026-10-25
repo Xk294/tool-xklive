@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { LogEntry } from '~/composables/useCompanionSocket'
 import { useI18n } from '~/composables/useI18n'
+import { translateEventMessage } from '~/utils/eventTranslator'
 
 const { t } = useI18n()
 
@@ -11,23 +12,39 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'clear'): void
 }>()
+
+function renderLogText(log: LogEntry): string {
+  return translateEventMessage(log, t)
+}
 </script>
 
 <template>
-  <div class="c-card">
+  <div class="c-card log-card">
     <div class="c-card-title">
-      <span>{{ t('log.title') }}</span>
-      <button class="c-btn-small" @click="emit('clear')">{{ t('common.clearLog') }}</button>
+      <div class="title-group">
+        <span>📜 {{ t('log.title') }}</span>
+      </div>
+      <button class="c-btn-small" @click="emit('clear')">
+        {{ t('common.clearLog') }}
+      </button>
     </div>
+
     <div class="log-box">
       <div
         v-for="log in logs"
         :key="log.id"
         :class="['log-entry', log.type]"
       >
-        <span class="time">{{ log.time }}</span>
-        <span>{{ log.text_code ? t(log.text_code, log.params) : log.text }}</span>
+        <span class="log-time font-mono">{{ log.time }}</span>
+        <span class="log-icon">
+          <template v-if="log.type === 'panic'">🚨</template>
+          <template v-else-if="log.type === 'warning'">⚠️</template>
+          <template v-else-if="log.type === 'approved'">✅</template>
+          <template v-else>ℹ️</template>
+        </span>
+        <span class="log-text">{{ renderLogText(log) }}</span>
       </div>
+
       <div v-if="logs.length === 0" class="log-empty">
         {{ t('log.empty') }}
       </div>
@@ -36,26 +53,44 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
+.log-card {
+  margin-bottom: 0;
+}
+
 .log-box {
-  height: 160px;
+  height: 280px;
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
-  background: #07090e;
-  padding: 8px;
-  border-radius: 4px;
+  background: #06080d;
+  padding: 8px 10px;
+  border-radius: 6px;
   border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .log-entry {
-  margin-bottom: 4px;
-  line-height: 1.3;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.35;
 }
 
-.log-entry span.time {
+.log-time {
   color: #64748b;
-  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.log-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.log-text {
+  word-break: break-word;
 }
 
 .log-entry.panic {
@@ -74,6 +109,7 @@ const emit = defineEmits<{
 .log-empty {
   color: #475569;
   font-style: italic;
-  padding: 8px 0;
+  padding: 16px 0;
+  text-align: center;
 }
 </style>

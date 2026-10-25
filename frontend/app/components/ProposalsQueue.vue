@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Proposal } from '~/composables/useCompanionSocket'
 import { useI18n } from '~/composables/useI18n'
+import { formatTargetName } from '~/utils/eventTranslator'
 
 const { t } = useI18n()
 
@@ -15,55 +16,69 @@ const emit = defineEmits<{
 }>()
 
 function formatTarget(p: Proposal): string {
-  if (p.target === 'main' || p.channel === 0) {
-    return 'Main LR'
-  }
-  if (p.target === 'bus') {
-    return t('proposals.bus', { n: p.bus ?? '' })
-  }
-  if (!p.channel_name) {
-    return t('proposals.channel', { n: p.channel })
-  }
-  const match = p.channel_name.match(/^(?:K\u00eanh|Ch)\s*0?(\d+)$/i)
-  if (match) {
-    return t('proposals.channel', { n: match[1] })
-  }
-  return p.channel_name
+  return formatTargetName(p, t)
 }
 </script>
 
 <template>
-  <div class="c-card">
+  <div class="c-card proposals-card">
     <div class="c-card-title">
-      <span>{{ t('proposals.title') }}</span>
-      <span :class="['badge', proposals.length > 0 ? 'reconnecting' : 'connected']">
+      <div class="title-group">
+        <span>⚡ {{ t('proposals.title') }}</span>
+      </div>
+      <span
+        :class="['proposal-badge font-mono', proposals.length > 0 ? 'badge-alert' : 'badge-safe']"
+      >
         {{ t('proposals.waiting', { n: proposals.length }) }}
       </span>
     </div>
 
     <div v-if="proposals.length === 0" class="empty-state">
-      {{ t('proposals.empty') }}
+      <span class="safe-icon">🛡️</span>
+      <span class="empty-msg">{{ t('proposals.empty') }}</span>
     </div>
 
     <div v-else class="proposals-list">
+      <div class="quick-tip">
+        <span>⌨️ {{ t('proposals.quickTip') }}</span>
+      </div>
+
       <div
-        v-for="p in proposals"
+        v-for="(p, idx) in proposals"
         :key="p.id"
-        class="proposal-card"
+        :class="['proposal-card', { 'is-top': idx === 0 }]"
       >
         <div class="prop-header">
-          <span class="prop-freq">{{ p.freq_hz.toFixed(1) }} Hz</span>
-          <span class="prop-gain">{{ p.gain_db.toFixed(1) }} dB</span>
+          <div class="prop-target">
+            <span class="target-name font-mono">{{ formatTarget(p) }}</span>
+            <span class="confidence-tag font-mono">
+              {{ (p.confidence_score * 100).toFixed(0) }}% {{ t('proposals.confidence') }}
+            </span>
+          </div>
+          <div class="prop-metrics">
+            <span class="prop-freq font-mono">{{ p.freq_hz.toFixed(1) }} Hz</span>
+            <span class="prop-gain font-mono">{{ p.gain_db.toFixed(1) }} dB</span>
+          </div>
         </div>
 
-        <div class="prop-meta">
-          {{ t('proposals.target') }}: <b>{{ formatTarget(p) }}</b> | {{ t('proposals.confidence') }}: <b>{{ (p.confidence_score * 100).toFixed(0) }}%</b>
+        <!-- CONFIDENCE LEVEL BAR -->
+        <div class="confidence-bar-bg">
+          <div
+            class="confidence-bar-fill"
+            :style="{ width: Math.min(100, p.confidence_score * 100) + '%' }"
+          />
         </div>
 
         <div class="prop-actions">
-          <button class="btn-approve" @click="emit('approve', p.id)">{{ t('common.approve') }}</button>
-          <button class="btn-reject" @click="emit('reject', p.id)">{{ t('common.reject') }}</button>
-          <button class="btn-snooze" @click="emit('snooze', p.id)">{{ t('common.snooze') }}</button>
+          <button class="btn-approve" @click="emit('approve', p.id)">
+            {{ t('common.approve') }}
+          </button>
+          <button class="btn-reject" @click="emit('reject', p.id)">
+            {{ t('common.reject') }}
+          </button>
+          <button class="btn-snooze" @click="emit('snooze', p.id)">
+            {{ t('common.snooze') }}
+          </button>
         </div>
       </div>
     </div>
@@ -71,108 +86,195 @@ function formatTarget(p: Proposal): string {
 </template>
 
 <style scoped>
+.proposals-card {
+  margin-bottom: 12px;
+}
+
+.proposal-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.badge-safe {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-alert {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  animation: pulse-border 1.5s infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 4px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.8); }
+}
+
 .empty-state {
-  color: var(--text-dim);
-  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
   text-align: center;
-  padding: 16px 0;
+  gap: 8px;
+}
+
+.safe-icon {
+  font-size: 24px;
+}
+
+.empty-msg {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.quick-tip {
+  font-size: 10px;
+  color: var(--accent-cyan);
+  background: rgba(56, 189, 248, 0.08);
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.proposals-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .proposal-card {
-  background: rgba(239, 68, 68, 0.1);
-  border: 2px solid var(--accent-red);
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 10px;
-  animation: alertPulse 1.8s infinite ease-in-out;
+  background: #090e17;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.15s ease;
 }
 
-@keyframes alertPulse {
-  0%, 100% { border-color: rgba(239, 68, 68, 0.8); }
-  50% { border-color: rgba(239, 68, 68, 0.3); }
+.proposal-card.is-top {
+  border-color: #ef4444;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.25);
 }
 
 .prop-header {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
+}
+
+.prop-target {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.target-name {
   font-weight: 700;
-  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.confidence-tag {
+  font-size: 10px;
+  color: var(--accent-amber);
+}
+
+.prop-metrics {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .prop-freq {
-  font-family: var(--font-mono);
-  font-size: 18px;
-  color: #fca5a5;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan);
 }
 
 .prop-gain {
-  color: var(--accent-red);
-  font-family: var(--font-mono);
+  font-size: 11px;
   font-weight: 700;
+  color: var(--accent-red);
 }
 
-.prop-meta {
-  font-size: 12px;
-  color: var(--text-dim);
-  margin-bottom: 10px;
+.confidence-bar-bg {
+  width: 100%;
+  height: 4px;
+  background: #151d2a;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.confidence-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #ef4444);
+  border-radius: 2px;
 }
 
 .prop-actions {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
+  display: flex;
   gap: 6px;
 }
 
 .btn-approve {
-  background: var(--accent-green);
-  color: #000;
+  flex: 2;
+  padding: 6px 10px;
+  background: linear-gradient(135deg, #059669, #047857);
+  border: 1px solid #10b981;
+  color: #fff;
+  border-radius: 4px;
   font-weight: 700;
-  border: none;
-  padding: 10px;
-  border-radius: 5px;
+  font-size: 11px;
   cursor: pointer;
-  min-height: 44px;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.3);
+  transition: all 0.15s ease;
+}
+
+.btn-approve:hover {
+  background: #047857;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
 }
 
 .btn-reject {
+  flex: 1;
+  padding: 6px;
   background: var(--bg-tertiary);
-  color: var(--text-main);
   border: 1px solid var(--border-color);
-  border-radius: 5px;
+  color: var(--text-dim);
+  border-radius: 4px;
+  font-size: 11px;
   cursor: pointer;
-  min-height: 44px;
+  transition: all 0.15s ease;
+}
+
+.btn-reject:hover {
+  border-color: var(--accent-red);
+  color: var(--accent-red);
 }
 
 .btn-snooze {
-  background: transparent;
-  color: var(--accent-amber);
-  border: 1px solid var(--accent-amber);
-  border-radius: 5px;
-  cursor: pointer;
-  min-height: 44px;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
+  flex: 1;
+  padding: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-dim);
   border-radius: 4px;
   font-size: 11px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.badge.connected {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--accent-green);
-  border: 1px solid var(--accent-green);
-}
-
-.badge.reconnecting {
-  background: rgba(245, 158, 11, 0.15);
+.btn-snooze:hover {
+  border-color: var(--accent-amber);
   color: var(--accent-amber);
-  border: 1px solid var(--accent-amber);
 }
 </style>

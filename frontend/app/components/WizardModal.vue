@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onUnmounted, watch } from 'vue'
 import { useI18n } from '~/composables/useI18n'
+import type {
+  WizardStartResult,
+  WizardStopResult,
+  WizardStatusSnapshot
+} from '~/composables/useCompanionSocket'
 
 const { t } = useI18n()
 
 const props = defineProps<{
   isOpen: boolean
-  startWizard: (channel: number, maxBoost: number, dwellTime: number) => Promise<any>
-  stopWizard: () => Promise<any>
-  getWizardStatus: () => Promise<any>
+  startWizard: (channel: number, maxBoost: number, dwellTime: number) => Promise<WizardStartResult>
+  stopWizard: () => Promise<WizardStopResult>
+  getWizardStatus: () => Promise<WizardStatusSnapshot>
 }>()
 
 const emit = defineEmits<{
@@ -18,65 +23,117 @@ const emit = defineEmits<{
 const targetChannel = ref(1)
 const maxBoostDb = ref(3.0)
 const dwellTimeS = ref(3.0)
-const statusData = ref<any>({ state: 'idle', current_gain_added: 0.0, detected_notches: 0 })
+const errorMsg = ref('')
+const statusData = ref<WizardStatusSnapshot>({
+  state: 'idle',
+  current_gain_added: 0.0,
+  detected_notches: 0
+})
 let pollInterval: ReturnType<typeof setInterval> | null = null
 
 async function pollStatus() {
-  const data = await props.getWizardStatus()
-  if (data) {
-    statusData.value = data
+  try {
+    const data = await props.getWizardStatus()
+    if (data) {
+      statusData.value = data
+      if (data.state !== 'running' && data.state !== 'paused') {
+        stopPolling()
+      }
+    }
+  } catch (err: unknown) {
+    stopPolling()
+    statusData.value = { ...statusData.value, state: 'aborted' }
+    errorMsg.value = err instanceof Error ? err.message : String(err)
   }
 }
 
 async function handleStart() {
-  await props.startWizard(targetChannel.value, maxBoostDb.value, dwellTimeS.value)
-  pollStatus()
+  errorMsg.value = ''
+  const res = await props.startWizard(targetChannel.value, maxBoostDb.value, dwellTimeS.value)
+  if (!res || res.success === false) {
+    errorMsg.value = res?.detail || 'Không thể khởi động thuật toán dò hú.'
+    return
+  }
+  startPolling()
 }
 
 async function handleStop() {
+  stopPolling()
   await props.stopWizard()
-  pollStatus()
+  await pollStatus()
 }
 
-onMounted(() => {
+async function handleClose() {
+  if (statusData.value.state === 'running' || statusData.value.state === 'paused') {
+    stopPolling()
+    await props.stopWizard().catch(() => {})
+  }
+  emit('close')
+}
+
+function startPolling() {
+  stopPolling()
   pollStatus()
-  pollInterval = setInterval(pollStatus, 1500)
-})
+  pollInterval = setInterval(pollStatus, 1000)
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+}
+
+watch(() => props.isOpen, (open) => {
+  if (open) {
+    pollStatus()
+  } else {
+    stopPolling()
+  }
+}, { immediate: true })
 
 onUnmounted(() => {
-  if (pollInterval) clearInterval(pollInterval)
+  const wasRunning = statusData.value.state === 'running' || statusData.value.state === 'paused'
+  stopPolling()
+  if (wasRunning) {
+    props.stopWizard().catch(() => {})
+  }
 })
 </script>
 
 <template>
-  <div v-if="isOpen" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-card">
+  <div v-if="isOpen" class="modal-overlay" @click.self="handleClose">
+    <div class="modal-card wizard-modal-card">
       <div class="modal-header">
-        <h3>{{ t('wizard.title') }}</h3>
-        <button class="close-btn" @click="emit('close')">✕</button>
+        <h3 class="wizard-header-title">{{ t('wizard.title') }}</h3>
+        <button class="close-btn" @click="handleClose">✕</button>
       </div>
 
       <div class="modal-body">
         <p class="wizard-desc">{{ t('wizard.desc') }}</p>
+
+        <div v-if="errorMsg" class="easy-error-banner">
+          ⚠️ {{ errorMsg }}
+        </div>
 
         <!-- FORM CONTROLS -->
         <div class="wizard-form">
           <div class="form-item">
             <label>{{ t('wizard.channel') }}</label>
             <select v-model.number="targetChannel" :disabled="statusData.state === 'running'" class="form-input">
-              <option v-for="ch in 16" :key="ch" :value="ch">CH {{ ch.toString().padStart(2, '0') }}</option>
               <option :value="0">Main LR</option>
+              <option v-for="b in 6" :key="b" :value="b">Bus {{ b.toString().padStart(2, '0') }}</option>
             </select>
           </div>
 
           <div class="form-item">
-            <label>{{ t('wizard.maxBoost') }} (0.5 ~ +6.0 dB)</label>
+            <label>{{ t('wizard.maxBoost') }} (0.5 ~ +4.0 dB)</label>
             <input
               v-model.number="maxBoostDb"
               type="number"
               step="0.5"
               min="0.5"
-              max="6.0"
+              max="4.0"
               :disabled="statusData.state === 'running'"
               class="form-input"
             />
@@ -125,61 +182,19 @@ onUnmounted(() => {
       </div>
 
       <div class="modal-footer">
-        <button class="c-btn-secondary" @click="emit('close')">{{ t('common.close') }}</button>
+        <button class="c-btn-secondary" @click="handleClose">{{ t('common.close') }}</button>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(3px);
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-}
-
-.modal-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
+.wizard-modal-card {
   max-width: 540px;
-  width: 100%;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
-.modal-header {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.modal-header h3 {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--accent-amber);
-}
-
-.close-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  font-size: 16px;
-  cursor: pointer;
-}
-
-.modal-body {
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.wizard-header-title {
+  color: var(--accent-amber) !important;
 }
 
 .wizard-desc {
@@ -281,12 +296,5 @@ onUnmounted(() => {
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-}
-
-.modal-footer {
-  padding: 12px 18px;
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

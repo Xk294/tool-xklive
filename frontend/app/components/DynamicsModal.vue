@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from '~/composables/useI18n'
+import type {
+  DynamicsResponse,
+  DynamicsSuggestionItem
+} from '~/composables/useCompanionSocket'
 
 const { t } = useI18n()
 
 const props = defineProps<{
   isOpen: boolean
-  fetchDynamics: () => Promise<any>
+  fetchDynamics: () => Promise<DynamicsResponse>
 }>()
 
 const emit = defineEmits<{
@@ -14,7 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const loading = ref(false)
-const suggestions = ref<any[]>([])
+const suggestions = ref<DynamicsSuggestionItem[]>([])
 
 async function loadData() {
   loading.value = true
@@ -34,7 +38,7 @@ onMounted(() => {
 
 <template>
   <div v-if="isOpen" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-card">
+    <div class="modal-card dyn-modal-card">
       <div class="modal-header">
         <h3>{{ t('dynamics.title') }}</h3>
         <button class="close-btn" @click="emit('close')">✕</button>
@@ -87,58 +91,8 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(3px);
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-}
-
-.modal-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
+.dyn-modal-card {
   max-width: 620px;
-  width: 100%;
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-}
-
-.modal-header {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.modal-header h3 {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--accent-cyan);
-}
-
-.close-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  font-size: 16px;
-  cursor: pointer;
-}
-
-.modal-body {
-  padding: 16px 18px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .notice-box {
@@ -209,14 +163,6 @@ onMounted(() => {
 
 .text-cyan {
   color: var(--accent-cyan) !important;
-}
-
-.modal-footer {
-  padding: 12px 18px;
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 
 .loading-state {

@@ -32,9 +32,9 @@ async function handleTrigger() {
 
 <template>
   <div v-if="isOpen" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-card">
+    <div class="modal-card demo-modal-card">
       <div class="modal-header">
-        <h3>{{ t('demo.title') }}</h3>
+        <h3 class="demo-header-title">{{ t('demo.title') }}</h3>
         <button class="close-btn" @click="emit('close')">✕</button>
       </div>
 
@@ -86,54 +86,12 @@ async function handleTrigger() {
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.75);
-  backdrop-filter: blur(3px);
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-}
-
-.modal-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
+.demo-modal-card {
   max-width: 440px;
-  width: 100%;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
-.modal-header {
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.modal-header h3 {
-  font-size: 15px;
-  font-weight: 700;
-  color: #c084fc;
-}
-
-.close-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  font-size: 16px;
-  cursor: pointer;
-}
-
-.modal-body {
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.demo-header-title {
+  color: #c084fc !important;
 }
 
 .demo-form {
@@ -213,12 +171,5 @@ async function handleTrigger() {
   border-radius: 4px;
   font-size: 12px;
   text-align: center;
-}
-
-.modal-footer {
-  padding: 12px 18px;
-  border-top: 1px solid var(--border-color);
-  display: flex;
-  justify-content: flex-end;
 }
 </style>

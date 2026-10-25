@@ -4,7 +4,7 @@ export default defineNuxtConfig({
   future: {
     compatibilityVersion: 4,
   },
-  ssr: false, // SPA Mode cho ứng dụng đồng hành điều khiển thời gian thực
+  ssr: false,
   css: ['~/assets/css/main.css'],
   app: {
     head: {

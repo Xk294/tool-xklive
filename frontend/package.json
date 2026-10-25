@@ -1,5 +1,6 @@
 {
   "name": "auto-sound-companion-ui",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
