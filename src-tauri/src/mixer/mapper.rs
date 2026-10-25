@@ -2,7 +2,6 @@
 pub struct SubMapper {
     pub min_val: f32,
     pub max_val: f32,
-    pub steps: u32,
     pub is_log: bool,
     log_min: f32,
     log_range: f32,
@@ -10,9 +9,8 @@ pub struct SubMapper {
 }
 
 impl SubMapper {
-    pub fn new(min_val: f32, max_val: f32, steps: u32, is_log: bool) -> Self {
+    pub fn new(min_val: f32, max_val: f32, is_log: bool) -> Self {
         assert!(min_val < max_val, "min_val must be less than max_val");
-        assert!(steps >= 2, "steps must be >= 2");
         if is_log {
             assert!(min_val > 0.0, "log mapper requires min_val > 0");
         }
@@ -28,7 +26,6 @@ impl SubMapper {
         Self {
             min_val,
             max_val,
-            steps,
             is_log,
             log_min,
             log_range,
@@ -55,18 +52,6 @@ impl SubMapper {
         };
         val.clamp(self.min_val, self.max_val)
     }
-
-    pub fn quantize_float(&self, f: f32) -> f32 {
-        let clamped = f.clamp(0.0, 1.0);
-        let step_idx = (clamped * (self.steps - 1) as f32).round();
-        step_idx / (self.steps - 1) as f32
-    }
-
-    pub fn snap(&self, val: f32) -> f32 {
-        let norm = self.to_float(val);
-        let q_norm = self.quantize_float(norm);
-        self.from_float(q_norm)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,15 +59,77 @@ pub struct ParameterMapper {
     pub freq: SubMapper,
     pub gain: SubMapper,
     pub q: SubMapper,
+    pub hpf: SubMapper,
+    pub headamp: SubMapper,
+    pub trim: SubMapper,
 }
 
 impl Default for ParameterMapper {
     fn default() -> Self {
         Self {
-            freq: SubMapper::new(20.0, 20000.0, 201, true),
-            gain: SubMapper::new(-15.0, 15.0, 121, false),
-            q: SubMapper::new(0.3, 10.0, 72, true),
+            freq: SubMapper::new(20.0, 20000.0, true),
+            gain: SubMapper::new(-15.0, 15.0, false),
+            q: SubMapper::new(0.3, 10.0, true),
+            hpf: SubMapper::new(20.0, 400.0, true),
+            headamp: SubMapper::new(-12.0, 60.0, false),
+            trim: SubMapper::new(-18.0, 18.0, false),
         }
+    }
+}
+
+impl ParameterMapper {
+    pub fn linear_to_db(lin: f32, floor_db: f32) -> f32 {
+        if lin > 1e-6 {
+            (20.0 * lin.log10()).max(floor_db)
+        } else {
+            floor_db
+        }
+    }
+
+    pub fn fader_norm_to_db(norm: f32) -> f32 {
+        (norm.clamp(0.0, 1.0) - 0.75) * 40.0
+    }
+
+    pub fn fader_delta_db_to_norm(delta_db: f32) -> f32 {
+        delta_db / 40.0
+    }
+
+    pub fn target_prefix(
+        target_type: &str,
+        channel: u8,
+        bus: Option<u8>,
+        lr_prefix: &str,
+    ) -> String {
+        let lr = if lr_prefix.is_empty() { "/lr" } else { lr_prefix };
+        match target_type {
+            "bus" => format!("/bus/{:02}", bus.unwrap_or(channel).max(1)),
+            "main" | "lr" => lr.to_string(),
+            _ => {
+                if channel == 0 {
+                    lr.to_string()
+                } else {
+                    format!("/ch/{:02}", channel)
+                }
+            }
+        }
+    }
+
+    pub fn target_fader_address(target_type: &str, target_id: u8) -> String {
+        if target_type == "lr" || target_type == "main" || target_id == 0 {
+            "/lr/mix/fader".to_string()
+        } else {
+            format!("/bus/{:02}/mix/fader", target_id)
+        }
+    }
+
+    pub fn target_eq_band_prefix(target_type: &str, target_num: u8, band: u8) -> String {
+        let prefix = Self::target_prefix(
+            target_type,
+            target_num,
+            if target_type == "bus" { Some(target_num) } else { None },
+            "/lr",
+        );
+        format!("{}/eq/{}", prefix, band)
     }
 }
 
@@ -104,6 +151,11 @@ mod tests {
         assert!((mapper.gain.to_float(-15.0) - 0.0).abs() < 1e-4);
         // +15 dB should map to 1.0
         assert!((mapper.gain.to_float(15.0) - 1.0).abs() < 1e-4);
+
+        // Headamp (-12..+60 dB) and Trim (-18..+18 dB) SSoT linear mappers
+        assert!((mapper.headamp.from_float(0.0) - -12.0).abs() < 1e-4);
+        assert!((mapper.headamp.from_float(1.0) - 60.0).abs() < 1e-4);
+        assert!((mapper.trim.from_float(0.5) - 0.0).abs() < 1e-4);
     }
 
     #[test]

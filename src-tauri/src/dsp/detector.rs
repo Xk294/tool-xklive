@@ -17,7 +17,6 @@ pub struct ChannelTrackedPeak {
 pub struct FeedbackDetector {
     pub sample_rate: u32,
     pub frame_size: usize,
-    pub hop_size: usize,
     pub prominence_threshold_db: f32,
     pub growth_threshold_db: f32,
     pub confirmation_frames: usize,
@@ -34,13 +33,13 @@ pub struct FeedbackDetector {
     window: Vec<f32>,
     fft: Arc<dyn Fft<f32>>,
 
-    // Preallocated buffers (Zero heap allocation in steady state)
     complex_buffer: Vec<Complex<f32>>,
     mag_db: Vec<f32>,
     noise_floor: Vec<f32>,
     prominence: Vec<f32>,
+    detected_peaks: Vec<(usize, f32, f32)>,
+    active_bins: HashSet<usize>,
 
-    // Peak tracking per channel: channel -> (bin_idx -> ChannelTrackedPeak)
     tracked_peaks: HashMap<u8, HashMap<usize, ChannelTrackedPeak>>,
 }
 
@@ -48,7 +47,6 @@ impl FeedbackDetector {
     pub fn new(
         sample_rate: u32,
         frame_size: usize,
-        hop_size: usize,
         prominence_threshold_db: f32,
         growth_threshold_db: f32,
         confirmation_frames: usize,
@@ -73,7 +71,6 @@ impl FeedbackDetector {
         Self {
             sample_rate,
             frame_size,
-            hop_size,
             prominence_threshold_db,
             growth_threshold_db,
             confirmation_frames,
@@ -91,20 +88,16 @@ impl FeedbackDetector {
             mag_db: vec![0.0; num_bins],
             noise_floor: vec![0.0; num_bins],
             prominence: vec![0.0; num_bins],
+            detected_peaks: Vec::with_capacity(32),
+            active_bins: HashSet::with_capacity(32),
             tracked_peaks: HashMap::new(),
         }
     }
 
     pub fn default_config() -> Self {
         Self::new(
-            48000, 2048, 512, 10.0, 2.0, 3, 100.0, 15000.0, -50.0, 8.0, -3.0,
+            48000, 2048, 10.0, 2.0, 3, 100.0, 15000.0, -50.0, 8.0, -3.0,
         )
-    }
-
-    pub fn reset_channel(&mut self, channel: u8) {
-        if let Some(peaks) = self.tracked_peaks.get_mut(&channel) {
-            peaks.clear();
-        }
     }
 
     pub fn reset_all(&mut self) {
@@ -115,7 +108,6 @@ impl FeedbackDetector {
         let peak_mag = self.mag_db[bin_idx];
         let total_bins = self.mag_db.len();
 
-        // 1. Check upper harmonics: 2*f0, 3*f0, 4*f0
         for mul in 2..=4 {
             let target = mul * bin_idx;
             if target < total_bins {
@@ -131,7 +123,6 @@ impl FeedbackDetector {
             }
         }
 
-        // 2. Check lower sub-harmonics: f0/2, f0/3, f0/4
         for div in 2..=4 {
             let target = (bin_idx as f32 / div as f32).round() as usize;
             if target >= 2 && target < total_bins {
@@ -150,11 +141,10 @@ impl FeedbackDetector {
         false
     }
 
-    // Moving 1D median filter of window size 31
     fn compute_median_filter(&mut self, window_size: usize) {
         let n = self.mag_db.len();
         let half = window_size / 2;
-        let mut temp = vec![0.0f32; window_size];
+        let mut temp = [0.0f32; 31];
 
         for i in 0..n {
             let mut count = 0;
@@ -169,7 +159,7 @@ impl FeedbackDetector {
                 temp[count] = self.mag_db[idx];
                 count += 1;
             }
-            temp.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            temp[..count].sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             self.noise_floor[i] = temp[half];
             self.prominence[i] = self.mag_db[i] - self.noise_floor[i];
         }
@@ -180,28 +170,26 @@ impl FeedbackDetector {
         channel: u8,
         samples: &[f32],
     ) -> Vec<ActionProposal> {
-        assert_eq!(samples.len(), self.frame_size, "Frame size mismatch");
+        if samples.len() != self.frame_size {
+            log::warn!("Frame size mismatch: expected {}, got {}", self.frame_size, samples.len());
+            return Vec::new();
+        }
 
-        // 1. Multiply Hann window & fill complex buffer
         for i in 0..self.frame_size {
             self.complex_buffer[i] = Complex::new(samples[i] * self.window[i], 0.0);
         }
 
-        // 2. Forward FFT in-place
         self.fft.process(&mut self.complex_buffer);
 
-        // 3. Compute magnitude in dB
         let num_bins = self.frame_size / 2 + 1;
         for i in 0..num_bins {
             let mag = (self.complex_buffer[i].norm()).max(1e-8);
             self.mag_db[i] = 20.0 * mag.log10();
         }
 
-        // 4. Compute noise floor via 1D median filter (window size 31)
         self.compute_median_filter(31);
 
-        // 5. Detect local peaks
-        let mut detected_peaks: Vec<(usize, f32, f32)> = Vec::new(); // (bin, exact_freq, exact_mag)
+        self.detected_peaks.clear();
 
         for k in self.min_bin..self.max_bin {
             if self.mag_db[k] < self.min_peak_db {
@@ -214,7 +202,6 @@ impl FeedbackDetector {
                         continue;
                     }
 
-                    // Parabolic interpolation
                     let alpha = self.mag_db[k - 1];
                     let beta = self.mag_db[k];
                     let gamma = self.mag_db[k + 1];
@@ -229,61 +216,65 @@ impl FeedbackDetector {
                     let exact_freq = exact_bin * self.bin_res;
                     let exact_mag = beta - 0.25 * (alpha - gamma) * p;
 
-                    detected_peaks.push((k, exact_freq, exact_mag));
+                    self.detected_peaks.push((k, exact_freq, exact_mag));
                 }
             }
         }
 
-        // 6. Track peak growth across frames
         let tracked = self.tracked_peaks.entry(channel).or_default();
-        let mut active_bins = HashSet::new();
+        self.active_bins.clear();
         let mut proposals = Vec::new();
 
-        for (k, freq, mag_val) in detected_peaks {
-            active_bins.insert(k);
+        for &(k, freq, mag_val) in &self.detected_peaks {
+            self.active_bins.insert(k);
 
             let matched_prev_bin = [k, k.saturating_sub(1), k + 1]
                 .into_iter()
                 .find(|&b| tracked.contains_key(&b));
 
             if let Some(prev_bin) = matched_prev_bin {
-                let mut peak_record = tracked.remove(&prev_bin).unwrap();
-                let growth = mag_val - peak_record.last_mag_db;
+                if let Some(mut peak_record) = tracked.remove(&prev_bin) {
+                    let growth = mag_val - peak_record.last_mag_db;
 
-                if growth < -1.0 {
-                    // Decay: keep tracking but do not increment count
-                    tracked.insert(k, peak_record);
-                    continue;
-                }
-
-                let total_growth = peak_record.accumulated_growth_db + growth.max(0.0);
-                let consecutive = peak_record.consecutive_frames + 1;
-                let is_reported = peak_record.is_reported;
-
-                peak_record.bin_idx = k;
-                peak_record.freq_hz = freq;
-                peak_record.last_mag_db = mag_val;
-                peak_record.accumulated_growth_db = total_growth;
-                peak_record.consecutive_frames = consecutive;
-
-                if consecutive >= self.confirmation_frames && !is_reported {
-                    if total_growth >= self.growth_threshold_db {
-                        peak_record.is_reported = true;
-                        proposals.push(ActionProposal {
-                            channel,
-                            freq_hz: (freq * 10.0).round() / 10.0,
-                            gain_db: self.probe_gain_db,
-                            q: self.default_notch_q,
-                            bus: None,
-                            band: None,
-                            target: "ch".to_string(),
-                            reason: format!("Feedback {:.1}Hz (+{:.1}dB tích lũy)", freq, total_growth),
-                            original_gain_db: 0.0,
-                        });
+                    if growth < -1.0 {
+                        tracked.insert(k, peak_record);
+                        continue;
                     }
-                }
 
-                tracked.insert(k, peak_record);
+                    let total_growth = peak_record.accumulated_growth_db + growth.max(0.0);
+                    let consecutive = peak_record.consecutive_frames + 1;
+                    let is_reported = peak_record.is_reported;
+
+                    peak_record.bin_idx = k;
+                    peak_record.freq_hz = freq;
+                    peak_record.last_mag_db = mag_val;
+                    peak_record.accumulated_growth_db = total_growth;
+                    peak_record.consecutive_frames = consecutive;
+
+                    if consecutive >= self.confirmation_frames && !is_reported {
+                        if total_growth >= self.growth_threshold_db {
+                            peak_record.is_reported = true;
+                            let rounded_freq = (freq * 10.0).round() / 10.0;
+                            let mut prop = ActionProposal {
+                                channel,
+                                freq_hz: rounded_freq,
+                                gain_db: self.probe_gain_db,
+                                q: self.default_notch_q,
+                                bus: None,
+                                band: None,
+                                target: "ch".to_string(),
+                                reason: format!("Feedback {:.1}Hz (+{:.1}dB tích lũy)", freq, total_growth),
+                                original_gain_db: 0.0,
+                                confidence_score: ((total_growth / 12.0) + 0.65).clamp(0.65, 0.99),
+                                ..Default::default()
+                            };
+                            prop.ensure_metadata(0.0);
+                            proposals.push(prop);
+                        }
+                    }
+
+                    tracked.insert(k, peak_record);
+                }
             } else {
                 tracked.insert(
                     k,
@@ -299,8 +290,8 @@ impl FeedbackDetector {
             }
         }
 
-        // Cleanup stale bins not seen in this frame
-        tracked.retain(|b, _| active_bins.contains(b));
+        let active_bins_ref = &self.active_bins;
+        tracked.retain(|b, _| active_bins_ref.contains(b));
 
         proposals
     }
@@ -326,7 +317,6 @@ mod tests {
 
         let mut proposals = Vec::new();
 
-        // Feed 4 consecutive frames with growing amplitude
         for frame_idx in 0..5 {
             let amp = 0.05 * 1.5f32.powi(frame_idx);
             let samples: Vec<f32> = (0..2048)
