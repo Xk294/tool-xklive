@@ -1170,7 +1170,6 @@ export function useCompanionSocket() {
     latencyMs,
     rttMs,
     dspLatencyMs,
-    firmwareReason,
     xruns,
     isLanRta,
     audioMode,
